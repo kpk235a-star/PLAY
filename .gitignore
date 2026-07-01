@@ -1,0 +1,21 @@
+# Installed packages — re-created by "npm install", so no need to commit them.
+# (Also important: these hold platform-specific binaries; the host rebuilds them.)
+node_modules/
+
+# Local database files (SQLite) plus its side files and backups — never commit
+# your local data; the app creates a fresh database on the server.
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data.db.bak*
+
+# Environment variables / secrets — never commit these.
+.env
+.env.*
+
+# Logs and Mac system files
+npm-debug.log*
+.DS_Store

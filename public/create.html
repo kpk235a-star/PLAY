@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create tournament — TeamCup</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-page="create">
+  <header class="site-header">
+    <div class="container">
+      <a class="logo" href="/">🏆 TeamCup</a>
+      <span class="tagline">Amateur sports tournaments</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <a class="back-link" href="/">← All tournaments</a>
+    <h1>Create a tournament</h1>
+    <p class="subtitle">Fill in the details. Next, you'll add teams.</p>
+
+    <form id="create-form" class="form-card">
+      <label class="field">
+        <span class="field-label">Name</span>
+        <input name="name" type="text" placeholder="e.g. Autumn Cup" autocomplete="off" required />
+      </label>
+
+      <label class="field">
+        <span class="field-label">Sport</span>
+        <select name="sport" required>
+          <option value="football">⚽ Football</option>
+          <option value="basketball">🏀 Basketball</option>
+          <option value="tennis">🎾 Tennis</option>
+          <option value="volleyball">🏐 Volleyball</option>
+          <option value="hockey">🏑 Hockey</option>
+          <option value="other">🏅 Other</option>
+        </select>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">Date</span>
+          <input name="date" type="date" required />
+        </label>
+        <label class="field">
+          <span class="field-label">Time <span class="optional">(optional)</span></span>
+          <input name="time" type="time" />
+        </label>
+      </div>
+
+      <label class="field">
+        <span class="field-label">Location</span>
+        <input name="location" type="text" placeholder="e.g. Riverside Park" autocomplete="off" required />
+      </label>
+
+      <button type="submit">Create &amp; add teams →</button>
+      <p id="form-message" class="form-message"></p>
+    </form>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">v1 demo · built with Node, Express &amp; SQLite</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

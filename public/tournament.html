@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tournament — TeamCup</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-page="tournament">
+  <header class="site-header">
+    <div class="container">
+      <a class="logo" href="/">🏆 TeamCup</a>
+      <span class="tagline">Amateur sports tournaments</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <a class="back-link" href="/">← All tournaments</a>
+
+    <!-- app.js fills these in once it loads the tournament. -->
+    <div id="tournament-header"><p class="loading">Loading tournament…</p></div>
+    <div id="champion"></div>
+    <div id="content"></div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">v1 demo · built with Node, Express &amp; SQLite</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

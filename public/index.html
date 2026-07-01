@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- This line makes the page size correctly on phones. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TeamCup — Amateur Tournaments</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<!-- data-page tells our JavaScript which page this is. -->
+<body data-page="home">
+  <header class="site-header">
+    <div class="container">
+      <a class="logo" href="/">🏆 TeamCup</a>
+      <span class="tagline">Amateur sports tournaments</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <h1>Tournaments</h1>
+    <p class="subtitle">Browse competitions and dive into the standings.</p>
+
+    <div class="page-actions">
+      <a class="btn-primary" href="/create.html">＋ Create tournament</a>
+    </div>
+
+    <!-- This box stays empty in the file; app.js fills it with tournament cards. -->
+    <div id="tournament-list" class="card-grid">
+      <p class="loading">Loading tournaments…</p>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">v1 demo · built with Node, Express &amp; SQLite</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

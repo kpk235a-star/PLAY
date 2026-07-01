@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Add teams — TeamCup</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-page="add-teams">
+  <header class="site-header">
+    <div class="container">
+      <a class="logo" href="/">🏆 TeamCup</a>
+      <span class="tagline">Amateur sports tournaments</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <a class="back-link" href="/">← All tournaments</a>
+    <div id="at-header"><p class="loading">Loading…</p></div>
+
+    <h2>Teams</h2>
+    <ol id="team-list" class="team-list"><li class="loading">Loading teams…</li></ol>
+
+    <form id="add-team-form">
+      <input id="team-name" type="text" placeholder="Team name" autocomplete="off" />
+      <button type="submit">Add team</button>
+    </form>
+    <p id="form-message" class="form-message"></p>
+
+    <section class="generate-section">
+      <p id="format-hint" class="format-hint"></p>
+      <p id="regenerate-note" class="regenerate-note"></p>
+      <button id="generate-btn" type="button" class="btn-generate">Generate schedule →</button>
+      <p class="hint-small">Add all your teams first — the full schedule is built when you click this.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">v1 demo · built with Node, Express &amp; SQLite</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

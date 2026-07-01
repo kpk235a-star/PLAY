@@ -1,0 +1,17 @@
+{
+  "name": "teamcup",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TeamCup — a simple app for amateur team-sport tournaments (v1)",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "express": "^5.2.1"
+  }
+}
