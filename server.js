@@ -17,7 +17,7 @@ const app = express();
 // or fall back to 3000 when running locally.
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' })); // headroom for small uploaded player photos
 app.use(express.static(path.join(__dirname, 'public')));
 
 // =============================================================================
@@ -367,6 +367,21 @@ function getTournamentView(id) {
     winner = { teamId: groups[0].standings[0].teamId, name: groups[0].standings[0].name };
   }
 
+  // Top scorers for this tournament (football only) — counted from goals.
+  let scorers = [];
+  if (tournament.sport === 'football') {
+    scorers = db.prepare(`
+      SELECT p.id AS playerId, p.name AS name, t.name AS teamName, COUNT(*) AS goals
+      FROM goals g
+      JOIN matches m  ON m.id = g.match_id
+      JOIN players p  ON p.id = g.player_id
+      JOIN teams t    ON t.id = p.team_id
+      WHERE m.tournament_id = ?
+      GROUP BY p.id
+      ORDER BY goals DESC, p.name COLLATE NOCASE
+    `).all(id);
+  }
+
   return {
     tournament: {
       id: tournament.id, name: tournament.name, sport: tournament.sport,
@@ -377,6 +392,7 @@ function getTournamentView(id) {
     knockout: hasKnockout ? { semis, final } : null,
     groupStageComplete,
     winner,
+    scorers,
   };
 }
 
@@ -510,15 +526,15 @@ const POSITIONS = ['Goalkeeper', 'Defender', 'Defender', 'Midfielder', 'Forward'
 
 // Make sure a team has its 5 player slots (created empty the first time).
 function ensurePlayers(teamId) {
-  let players = db.prepare('SELECT id, slot, name FROM players WHERE team_id = ? ORDER BY slot').all(teamId);
+  let players = db.prepare('SELECT id, slot, name, photo FROM players WHERE team_id = ? ORDER BY slot').all(teamId);
   if (players.length === 0) {
     const insert = db.prepare('INSERT INTO players (team_id, slot, name) VALUES (?, ?, NULL)');
     db.transaction(() => {
       for (let slot = 0; slot < POSITIONS.length; slot++) insert.run(teamId, slot);
     })();
-    players = db.prepare('SELECT id, slot, name FROM players WHERE team_id = ? ORDER BY slot').all(teamId);
+    players = db.prepare('SELECT id, slot, name, photo FROM players WHERE team_id = ? ORDER BY slot').all(teamId);
   }
-  return players.map((p) => ({ id: p.id, slot: p.slot, name: p.name, position: POSITIONS[p.slot] || 'Player' }));
+  return players.map((p) => ({ id: p.id, slot: p.slot, name: p.name, photo: p.photo, position: POSITIONS[p.slot] || 'Player' }));
 }
 
 // A football match's score is the number of goals each side scored. Recompute it
@@ -553,17 +569,34 @@ app.get('/api/matches/:id/detail', (req, res) => {
   const teamA = db.prepare('SELECT id, name FROM teams WHERE id = ?').get(match.team_a_id);
   const teamB = db.prepare('SELECT id, name FROM teams WHERE id = ?').get(match.team_b_id);
   const goals = db.prepare(`
-    SELECT g.id, g.player_id AS playerId, p.name AS playerName, p.slot AS playerSlot, p.team_id AS teamId
+    SELECT g.id, g.player_id AS playerId, g.minute AS minute,
+           p.name AS playerName, p.slot AS playerSlot, p.team_id AS teamId
     FROM goals g JOIN players p ON p.id = g.player_id
     WHERE g.match_id = ?
-    ORDER BY g.id
+    ORDER BY (g.minute IS NULL), g.minute, g.id
   `).all(id);
+
+  // Man-of-the-Match vote tallies for this match (player id -> count).
+  const voteRows = db
+    .prepare('SELECT player_id AS playerId, COUNT(*) AS votes FROM votes WHERE match_id = ? GROUP BY player_id')
+    .all(id);
+  const votesByPlayer = {};
+  for (const r of voteRows) votesByPlayer[r.playerId] = r.votes;
+
+  // Per-match player ratings (player id -> 1..10).
+  const ratingRows = db.prepare('SELECT player_id AS playerId, rating FROM ratings WHERE match_id = ?').all(id);
+  const ratingByPlayer = {};
+  for (const r of ratingRows) ratingByPlayer[r.playerId] = r.rating;
+
+  // Attach this match's votes + rating to each player.
+  const enrich = (players) =>
+    players.map((p) => ({ ...p, votes: votesByPlayer[p.id] || 0, rating: ratingByPlayer[p.id] ?? null }));
 
   res.json({
     match: { id: match.id, scoreA: match.score_a, scoreB: match.score_b, photoUrl: match.photo_url },
     tournament: { id: tournament.id, name: tournament.name, date: tournament.date, time: tournament.time },
-    teamA: { id: teamA.id, name: teamA.name, players: ensurePlayers(teamA.id) },
-    teamB: { id: teamB.id, name: teamB.name, players: ensurePlayers(teamB.id) },
+    teamA: { id: teamA.id, name: teamA.name, players: enrich(ensurePlayers(teamA.id)) },
+    teamB: { id: teamB.id, name: teamB.name, players: enrich(ensurePlayers(teamB.id)) },
     goals,
   });
 });
@@ -579,7 +612,113 @@ app.put('/api/players/:id', (req, res) => {
   res.json({ ok: true, id, name });
 });
 
-// Add a goal for a player. Body: { playerId }.
+// Set (or clear) a player's photo. Body: { photo } — a small image data URL,
+// or null/empty to remove it. The browser shrinks the image before sending.
+app.post('/api/players/:id/photo', (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT id FROM players WHERE id = ?').get(id)) {
+    return res.status(404).json({ error: 'Player not found' });
+  }
+  const photo = req.body.photo;
+  if (photo) {
+    if (!/^data:image\/(png|jpe?g|webp|gif);base64,/.test(photo)) {
+      return res.status(400).json({ error: 'Please choose an image file.' });
+    }
+    if (photo.length > 1500000) {
+      return res.status(413).json({ error: 'That image is too large — try a smaller one.' });
+    }
+  }
+  db.prepare('UPDATE players SET photo = ? WHERE id = ?').run(photo || null, id);
+  res.json({ ok: true });
+});
+
+// Rename a team. Body: { name }. Updates it everywhere (standings, fixtures...).
+app.put('/api/teams/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT id FROM teams WHERE id = ?').get(id)) {
+    return res.status(404).json({ error: 'Team not found' });
+  }
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Please provide a team name.' });
+  db.prepare('UPDATE teams SET name = ? WHERE id = ?').run(name, id);
+  res.json({ ok: true, id, name });
+});
+
+// Add a substitute to a team's squad (football only). Creates a blank player at
+// the next slot; you set the name afterwards on the match page.
+app.post('/api/teams/:id/players', (req, res) => {
+  const id = Number(req.params.id);
+  const team = db
+    .prepare('SELECT t.id, tr.sport FROM teams t JOIN tournaments tr ON tr.id = t.tournament_id WHERE t.id = ?')
+    .get(id);
+  if (!team) return res.status(404).json({ error: 'Team not found' });
+  if (team.sport !== 'football') return res.status(400).json({ error: 'Squads are only for football tournaments.' });
+
+  const nextSlot = (db.prepare('SELECT MAX(slot) AS m FROM players WHERE team_id = ?').get(id).m ?? -1) + 1;
+  const info = db.prepare('INSERT INTO players (team_id, slot, name) VALUES (?, ?, NULL)').run(id, nextSlot);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid, slot: nextSlot });
+});
+
+// Remove a player — but only if the squad keeps at least 5 (so the pitch stays
+// full). The remaining players are re-packed so there are no gaps in the order.
+app.delete('/api/players/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const player = db.prepare('SELECT id, team_id FROM players WHERE id = ?').get(id);
+  if (!player) return res.status(404).json({ error: 'Player not found' });
+  const count = db.prepare('SELECT COUNT(*) AS n FROM players WHERE team_id = ?').get(player.team_id).n;
+  if (count <= 5) return res.status(400).json({ error: 'A team needs at least 5 players.' });
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM players WHERE id = ?').run(id);
+    const rest = db.prepare('SELECT id FROM players WHERE team_id = ? ORDER BY slot, id').all(player.team_id);
+    const setSlot = db.prepare('UPDATE players SET slot = ? WHERE id = ?');
+    rest.forEach((p, i) => setSlot.run(i, p.id));
+  })();
+  res.json({ ok: true });
+});
+
+// Reorder a team's squad. Body: { playerIds } in the new order; each player's
+// slot becomes its position (0-based). The first 5 are the starters.
+app.post('/api/teams/:id/players/reorder', (req, res) => {
+  const id = Number(req.params.id);
+  const playerIds = req.body.playerIds;
+  if (!Array.isArray(playerIds) || playerIds.length === 0) {
+    return res.status(400).json({ error: 'No players to reorder.' });
+  }
+  const placeholders = playerIds.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT id, team_id FROM players WHERE id IN (${placeholders})`).all(...playerIds.map(Number));
+  if (rows.length !== playerIds.length || rows.some((r) => r.team_id !== id)) {
+    return res.status(400).json({ error: 'Those players are not all in this team.' });
+  }
+  const setSlot = db.prepare('UPDATE players SET slot = ? WHERE id = ?');
+  db.transaction(() => { playerIds.forEach((pid, i) => setSlot.run(i, Number(pid))); })();
+  res.json({ ok: true });
+});
+
+// Set (or clear) a player's rating for THIS match. Body: { playerId, rating }.
+app.post('/api/matches/:id/ratings', (req, res) => {
+  const id = Number(req.params.id);
+  const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
+  if (!match) return res.status(404).json({ error: 'Match not found' });
+  const player = db.prepare('SELECT id, team_id FROM players WHERE id = ?').get(Number(req.body.playerId));
+  if (!player || (player.team_id !== match.team_a_id && player.team_id !== match.team_b_id)) {
+    return res.status(400).json({ error: 'That player is not in this match.' });
+  }
+  const raw = req.body.rating;
+  if (raw === null || raw === '' || raw === undefined) {
+    db.prepare('DELETE FROM ratings WHERE match_id = ? AND player_id = ?').run(id, player.id);
+    return res.json({ ok: true, rating: null });
+  }
+  const rating = Math.floor(Number(raw));
+  if (!Number.isInteger(rating) || rating < 1 || rating > 10) {
+    return res.status(400).json({ error: 'Rating must be a whole number from 1 to 10.' });
+  }
+  db.prepare(`INSERT INTO ratings (match_id, player_id, rating) VALUES (?, ?, ?)
+              ON CONFLICT(match_id, player_id) DO UPDATE SET rating = excluded.rating`).run(id, player.id, rating);
+  res.json({ ok: true, rating });
+});
+
+// Add a goal for a player. Body: { playerId, minute }.
 app.post('/api/matches/:id/goals', (req, res) => {
   const id = Number(req.params.id);
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
@@ -590,7 +729,13 @@ app.post('/api/matches/:id/goals', (req, res) => {
   if (player.team_id !== match.team_a_id && player.team_id !== match.team_b_id) {
     return res.status(400).json({ error: 'That player is not in this match.' });
   }
-  const info = db.prepare('INSERT INTO goals (match_id, player_id) VALUES (?, ?)').run(id, player.id);
+  // Optional minute (a whole number >= 0). Blank or invalid is stored as NULL.
+  const raw = req.body.minute;
+  const minute = raw === '' || raw == null || !Number.isFinite(Number(raw))
+    ? null
+    : Math.max(0, Math.floor(Number(raw)));
+
+  const info = db.prepare('INSERT INTO goals (match_id, player_id, minute) VALUES (?, ?, ?)').run(id, player.id, minute);
   recomputeScoreFromGoals(match);
   res.status(201).json({ ok: true, goalId: info.lastInsertRowid });
 });
@@ -618,6 +763,36 @@ app.post('/api/matches/:id/photo', (req, res) => {
   }
   db.prepare('UPDATE matches SET photo_url = ? WHERE id = ?').run(url || null, id);
   res.json({ ok: true, photoUrl: url || null });
+});
+
+// Cast a Man-of-the-Match vote. Body: { playerId, voterToken }.
+// The UNIQUE(match_id, voter_token) rule allows one vote per device per match.
+app.post('/api/matches/:id/vote', (req, res) => {
+  const id = Number(req.params.id);
+  const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
+  if (!match) return res.status(404).json({ error: 'Match not found' });
+
+  const player = db.prepare('SELECT id, team_id FROM players WHERE id = ?').get(Number(req.body.playerId));
+  if (!player) return res.status(400).json({ error: 'Unknown player.' });
+  if (player.team_id !== match.team_a_id && player.team_id !== match.team_b_id) {
+    return res.status(400).json({ error: 'That player is not in this match.' });
+  }
+  const voterToken = (req.body.voterToken || '').trim();
+  if (!voterToken) return res.status(400).json({ error: 'Missing voter token.' });
+
+  try {
+    db.prepare('INSERT INTO votes (match_id, player_id, voter_token) VALUES (?, ?, ?)').run(id, player.id, voterToken);
+  } catch (err) {
+    if (String(err).includes('UNIQUE')) {
+      return res.status(409).json({ error: 'This device has already voted in this match.' });
+    }
+    throw err;
+  }
+
+  const counts = db
+    .prepare('SELECT player_id AS playerId, COUNT(*) AS votes FROM votes WHERE match_id = ? GROUP BY player_id')
+    .all(id);
+  res.status(201).json({ ok: true, counts });
 });
 
 // =============================================================================

@@ -532,3 +532,199 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
   font-size: 0.85rem;
   text-align: center;
 }
+
+/* ---------- Match detail v2: timer, pitch, goals, voting ---------- */
+/* Team accent colors (Team A = blue, Team B = rose) */
+.team-a { color: #1d4ed8; }
+.team-b { color: #be123c; }
+
+/* Match timer */
+.timer {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  margin: 12px 0 4px;
+  text-align: center;
+}
+.timer-clock { font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.timer-controls {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; flex-wrap: wrap; margin-top: 8px;
+}
+.timer-field { font-size: 0.85rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.timer-field input {
+  width: 64px; padding: 7px 8px;
+  border: 1px solid var(--border); border-radius: 8px;
+  font-size: 1rem; text-align: center;
+}
+.timer-status { color: #b45309; font-weight: 700; min-height: 1.2em; margin-top: 6px; }
+
+/* Football pitch */
+.pitch {
+  position: relative;
+  width: 100%; max-width: 420px;
+  margin: 8px auto;
+  aspect-ratio: 5 / 7;
+  background: #2f8f5b;
+  background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.045) 0 10%, rgba(0,0,0,0.03) 10% 20%);
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.pitch-halfway { position: absolute; left: 0; right: 0; top: 50%; border-top: 2px solid rgba(255, 255, 255, 0.7); }
+.pitch-circle {
+  position: absolute; left: 50%; top: 50%;
+  width: 26%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.7); border-radius: 50%;
+}
+.pitch-box { position: absolute; left: 50%; transform: translateX(-50%); width: 54%; height: 13%; border: 2px solid rgba(255, 255, 255, 0.6); }
+.pitch-box-top { top: -2px; border-top: none; border-radius: 0 0 8px 8px; }
+.pitch-box-bottom { bottom: -2px; border-bottom: none; border-radius: 8px 8px 0 0; }
+.pitch-team-label {
+  position: absolute; left: 10px;
+  font-size: 0.72rem; font-weight: 700; color: rgba(255, 255, 255, 0.9);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.label-top { top: 6px; }
+.label-bottom { bottom: 6px; }
+.pitch-player {
+  position: absolute; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  width: 84px;
+}
+.player-disc {
+  width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 0.9rem;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.disc-A { background: #2563eb; }
+.disc-B { background: #e11d48; }
+.pitch-name {
+  flex: 0 0 auto;
+  width: 82px; text-align: center;
+  font-size: 0.72rem; font-weight: 600;
+  border: none; border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96); color: #1a2233;
+  padding: 2px 4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.pitch-name::placeholder { color: #9ca3af; font-weight: 400; }
+.pitch-name:focus { outline: none; box-shadow: 0 0 0 2px var(--primary); }
+
+/* Ordered goal list */
+.scorer-list { list-style: none; padding: 0; margin: 0 0 14px; display: flex; flex-direction: column; gap: 6px; }
+.scorer-list li {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 8px 12px;
+}
+.goal-minute-badge {
+  flex: 0 0 auto; min-width: 34px; text-align: center;
+  font-weight: 700; font-size: 0.85rem; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.goal-name { flex: 1; min-width: 0; font-size: 0.95rem; }
+.goal-team { font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+
+/* Per-team add-goal controls */
+.goal-adders { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px; }
+@media (max-width: 560px) { .goal-adders { grid-template-columns: 1fr; } }
+.goal-adder-col {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px;
+}
+.goal-adder-team { display: block; font-weight: 600; font-size: 0.9rem; margin-bottom: 8px; }
+.goal-adder { display: flex; gap: 8px; align-items: center; }
+.goal-select { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; background: #fff; }
+.goal-minute { width: 54px; padding: 8px 6px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; text-align: center; }
+
+/* Man of the Match voting */
+.motm-list { list-style: none; padding: 0; margin: 0 0 40px; display: flex; flex-direction: column; gap: 6px; }
+.motm-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 8px 12px;
+}
+.motm-row.leader { border-color: #f59e0b; background: #fffbeb; }
+.motm-crown { flex: 0 0 auto; width: 18px; text-align: center; }
+.motm-name { flex: 1; min-width: 0; font-weight: 600; font-size: 0.95rem; }
+.motm-team { font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
+.motm-count { flex: 0 0 auto; min-width: 26px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.motm-voted { flex: 0 0 auto; font-size: 0.8rem; color: var(--primary); font-weight: 600; min-width: 64px; text-align: right; }
+
+/* Player photos on the pitch discs */
+.player-disc { cursor: pointer; background-size: cover; background-position: center; overflow: hidden; }
+.player-disc.has-photo { color: transparent; }
+
+/* Top-scorer ranking (tournament page) */
+.scorers-block { margin-top: 20px; }
+.ranking {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+}
+.rank-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+}
+.ranking > .rank-row:first-child { border-top: none; }
+.rank-num { flex: 0 0 auto; width: 22px; text-align: center; color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+.rank-name { flex: 1; min-width: 0; font-weight: 600; }
+.rank-team { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.rank-goals { flex: 0 0 auto; min-width: 26px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.show-all-scorers { margin-top: 8px; }
+
+/* ---------- Squad list (match page) ---------- */
+.squad-hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 0.8rem; color: var(--muted); }
+.squad-col { display: flex; flex-direction: column; }
+.squad-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.squad-section {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); margin: 8px 0 2px;
+}
+.squad-empty { color: var(--muted); font-size: 0.85rem; margin: 2px 0; }
+.squad-row {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 7px;
+}
+.squad-row.dragging { opacity: 0.5; border-color: var(--primary); }
+.squad-avatar {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--muted); color: #fff; font-size: 0.72rem; font-weight: 700;
+  background-size: cover; background-position: center; cursor: pointer; overflow: hidden;
+}
+.squad-avatar.has-photo { color: transparent; }
+.squad-name {
+  flex: 1; min-width: 0;
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 0.85rem; background: #fff; color: var(--text);
+}
+.squad-name:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+.rating-select {
+  flex: 0 0 auto; width: 50px; padding: 4px 2px;
+  border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; background: #fff;
+}
+.squad-move { display: flex; flex-direction: column; gap: 1px; flex: 0 0 auto; }
+.squad-move button {
+  padding: 0 5px; font-size: 0.6rem; line-height: 1.35; font-weight: 700;
+  color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
+}
+.squad-move button:hover { color: var(--primary); background: #eef2ff; }
+.remove-player { flex: 0 0 auto; color: var(--muted); padding: 2px 5px; font-size: 0.85rem; }
+.remove-player:hover { color: #b45309; text-decoration: none; }
+.remove-spacer { flex: 0 0 auto; width: 22px; }
+.add-sub { align-self: flex-start; }
+
+/* ---------- Editable team names (Manage teams page) ---------- */
+.team-list li { display: flex; align-items: center; gap: 6px; }
+.team-name-input {
+  flex: 1; min-width: 0;
+  border: none; background: transparent; color: var(--text);
+  font-size: 1rem; padding: 3px 6px; border-radius: 6px;
+}
+.team-name-input:hover { background: #fff; }
+.team-name-input:focus { outline: none; background: #fff; box-shadow: 0 0 0 2px var(--primary); }

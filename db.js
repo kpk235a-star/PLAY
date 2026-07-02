@@ -75,6 +75,7 @@ db.exec(`
     team_id INTEGER NOT NULL,
     slot    INTEGER NOT NULL,
     name    TEXT,                 -- editable; blank until entered
+    photo   TEXT,                 -- optional avatar, stored as a small image data URL
     FOREIGN KEY (team_id) REFERENCES teams(id)
   );
 
@@ -84,6 +85,31 @@ db.exec(`
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id  INTEGER NOT NULL,
     player_id INTEGER NOT NULL,
+    minute    INTEGER,              -- the minute the goal was scored (optional)
+    FOREIGN KEY (match_id)  REFERENCES matches(id)  ON DELETE CASCADE,
+    FOREIGN KEY (player_id) REFERENCES players(id)  ON DELETE CASCADE
+  );
+
+  -- Football only: Man-of-the-Match votes. One vote per device (voter_token)
+  -- per match, enforced by the UNIQUE rule. Votes clear if the match is regenerated.
+  CREATE TABLE IF NOT EXISTS votes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id    INTEGER NOT NULL,
+    player_id   INTEGER NOT NULL,
+    voter_token TEXT    NOT NULL,
+    UNIQUE (match_id, voter_token),
+    FOREIGN KEY (match_id)  REFERENCES matches(id)  ON DELETE CASCADE,
+    FOREIGN KEY (player_id) REFERENCES players(id)  ON DELETE CASCADE
+  );
+
+  -- Football only: a per-match player rating (1-10). One rating per player per
+  -- match (UNIQUE), overwritten when changed.
+  CREATE TABLE IF NOT EXISTS ratings (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id  INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
+    rating    INTEGER NOT NULL,
+    UNIQUE (match_id, player_id),
     FOREIGN KEY (match_id)  REFERENCES matches(id)  ON DELETE CASCADE,
     FOREIGN KEY (player_id) REFERENCES players(id)  ON DELETE CASCADE
   );
@@ -148,6 +174,12 @@ db.prepare('UPDATE matches SET sort_order = id WHERE sort_order IS NULL').run();
 
 // Football match detail: a place to store the photo album link.
 addColumnIfMissing('matches', 'photo_url', 'TEXT');
+
+// Goal minutes (added later): older goals rows won't have this column yet.
+addColumnIfMissing('goals', 'minute', 'INTEGER');
+
+// Player photos (added later): small avatar image stored as a data URL.
+addColumnIfMissing('players', 'photo', 'TEXT');
 
 // Hand this ready-to-use database connection to any file that needs it.
 module.exports = db;

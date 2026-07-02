@@ -24,10 +24,14 @@ JavaScript** for the pages — no build step, nothing to compile.
   reorder them; the scheduler already spaces games so teams rest 1–2 matches.
   Standings update live, and the semifinals / final fill in automatically once
   the previous round is decided — ending in a 🏆 champion.
-- **Football only:** click a match to open its **detail page** — set each team's
-  5-player lineup (1 keeper + 4 outfield), record **goal scorers** (the score
-  updates from the goals), and save a **Match Photos** link (a Google Drive
-  album). Basketball and tennis don't have this yet.
+- **Football only:** click a match to open its **detail page**, which has a
+  **visual pitch** (both teams in a 1‑2‑2 — tap a name to edit it, tap a circle
+  to **add a player photo**), a **match timer** (counts up to a duration you
+  set), an ordered **goal list** with the scorer, team, and **minute** (the
+  score updates from the goals), **Man of the Match voting** (one vote per
+  device, no login, current leader highlighted), and a **Match Photos** link (a
+  Google Drive album). The football tournament page also shows a **Top Scorers**
+  ranking (top 5, expandable). Basketball and tennis don't have these yet.
 
 Scoring for standings: **win = 3 points, draw = 1, loss = 0.** Standings are
 calculated from the match results, never stored.
@@ -128,10 +132,13 @@ team-sports/
   semifinal 1") and a blank score until played. Also carry `sort_order` (fixture
   order — drag to change) and, for football, a `photo_url`.
 - **players** *(football only)* — a team's 5-slot roster: `team_id`, `slot`
-  (0–4, which gives the position label), `name`. Created the first time you open
-  one of the team's matches.
-- **goals** *(football only)* — one row per goal: `match_id`, `player_id`. A
-  football match's score is simply its goal count.
+  (0–4, which gives the position label), `name`, `photo` (a small avatar image
+  stored inline). Created the first time you open one of the team's matches.
+- **goals** *(football only)* — one row per goal: `match_id`, `player_id`,
+  `minute`. A football match's score is simply its goal count.
+- **votes** *(football only)* — Man-of-the-Match votes: `match_id`, `player_id`,
+  `voter_token`, with `UNIQUE(match_id, voter_token)` so each device votes once
+  per match.
 
 Standings are **not** stored — they're calculated from the played matches (see
 `standingsFor` in `server.js`). Knockout teams are filled in by `resolveBracket`

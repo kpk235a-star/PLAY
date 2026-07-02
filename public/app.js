@@ -138,11 +138,24 @@ async function loadAddTeamsPage() {
   async function loadTeams() {
     const teams = await fetch('/api/tournaments/' + id + '/teams').then((r) => r.json());
     listEl.innerHTML = teams.length
-      ? teams.map((t) => `<li>${escapeHtml(t.name)}</li>`).join('')
+      ? teams.map((t) => `<li><input class="team-name-input" data-team="${t.id}" value="${escapeHtml(t.name)}" autocomplete="off" aria-label="Team name" /></li>`).join('')
       : '<li class="empty">No teams yet — add your first below.</li>';
     updateHint(teams.length);
   }
   await loadTeams();
+
+  // Rename a team when you edit its name and click away or press Enter.
+  listEl.addEventListener('focusout', (e) => {
+    if (!e.target.classList.contains('team-name-input')) return;
+    const name = e.target.value.trim();
+    if (!name) return;
+    fetch('/api/teams/' + e.target.dataset.team, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    }).catch(() => {});
+  });
+  listEl.addEventListener('keydown', (e) => {
+    if (e.target.classList.contains('team-name-input') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+  });
 
   // Add a team.
   document.getElementById('add-team-form').addEventListener('submit', async (event) => {
@@ -226,7 +239,7 @@ function formatDescription(format) {
 }
 
 function renderTournamentPage() {
-  const { tournament, groups, knockout, winner } = tView;
+  const { tournament, groups, knockout, winner, scorers } = tView;
   const s = sportOf(tournament.sport);
   const football = tournament.sport === 'football'; // only football matches are clickable
 
@@ -249,6 +262,11 @@ function renderTournamentPage() {
 
   if (!hasAnyMatches) {
     html += `<div class="notice">No schedule yet. <a href="/add-teams.html?id=${tournament.id}">Add teams and generate the schedule →</a></div>`;
+  }
+
+  // Top scorers (football only), shown near the top of the schedule page.
+  if (football && scorers && scorers.length) {
+    html += topScorersHtml(scorers);
   }
 
   // Groups: each has a standings table and its (drag-reorderable) fixtures.
@@ -299,6 +317,32 @@ function standingsTableHtml(standings) {
           </tr>`).join('')}
       </tbody>
     </table>`;
+}
+
+// Top-scorer ranking: top 5 always shown, the rest behind a "Show all" toggle.
+function scorerRow(s, index) {
+  return `
+    <div class="rank-row">
+      <span class="rank-num">${index + 1}</span>
+      <span class="rank-name">${escapeHtml(s.name || 'Player')}</span>
+      <span class="rank-team">${escapeHtml(s.teamName)}</span>
+      <span class="rank-goals">${s.goals}</span>
+    </div>`;
+}
+function topScorersHtml(scorers) {
+  const top = scorers.slice(0, 5);
+  const rest = scorers.slice(5);
+  return `
+    <section class="scorers-block">
+      <h2>Top scorers</h2>
+      <div class="ranking">
+        ${top.map((s, i) => scorerRow(s, i)).join('')}
+        <div class="ranking-rest" hidden>${rest.map((s, i) => scorerRow(s, i + 5)).join('')}</div>
+      </div>
+      ${rest.length
+        ? `<button type="button" class="btn-link show-all-scorers" data-expanded="0">Show all ${scorers.length} scorers</button>`
+        : ''}
+    </section>`;
 }
 
 // One match card. isKnockout controls the "can't end level" hint; reorderable
@@ -408,6 +452,16 @@ function onContentClick(event) {
   if (up) { moveCard(up.closest('.match'), -1); return; }
   const down = event.target.closest('.move-down');
   if (down) { moveCard(down.closest('.match'), 1); return; }
+  const showAll = event.target.closest('.show-all-scorers');
+  if (showAll) {
+    const block = showAll.closest('.scorers-block');
+    const rest = block.querySelector('.ranking-rest');
+    const expanded = showAll.dataset.expanded === '1';
+    rest.hidden = expanded;
+    showAll.dataset.expanded = expanded ? '0' : '1';
+    showAll.textContent = expanded ? 'Show all ' + (block.querySelectorAll('.rank-row').length) + ' scorers' : 'Show top 5';
+    return;
+  }
 }
 
 // ----- Reordering fixtures (drag-and-drop + up/down buttons) -----
@@ -485,121 +539,470 @@ async function persistOrder(list) {
 }
 
 // =============================================================================
-// MATCH DETAIL PAGE (football only) — lineups, goal scorers, photo link
+// MATCH DETAIL PAGE (football only)
+// A visual pitch lineup, a match timer, an ordered goal list with minutes, and
+// Man-of-the-Match voting. The timer lives in its own container so it keeps
+// running while the rest of the page re-renders.
 // =============================================================================
-const POSITIONS = ['Goalkeeper', 'Defender', 'Defender', 'Midfielder', 'Forward'];
 let matchDetail = null;
+
+// 1-2-2 pitch positions per team (percent of the pitch). Slot 0 = keeper,
+// slots 1-2 = the back pair, slots 3-4 = the front pair. Team A sits on the
+// bottom half; Team B is mirrored on the top half.
+const PITCH_SPOTS = {
+  A: [{ x: 50, y: 89 }, { x: 30, y: 74 }, { x: 70, y: 74 }, { x: 34, y: 60 }, { x: 66, y: 60 }],
+  B: [{ x: 50, y: 11 }, { x: 30, y: 26 }, { x: 70, y: 26 }, { x: 34, y: 40 }, { x: 66, y: 40 }],
+};
+
+// A stable per-device token for one-vote-per-device (kept in the browser).
+function voterToken() {
+  let t = localStorage.getItem('motm-voter-token');
+  if (!t) { t = 'v-' + Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('motm-voter-token', t); }
+  return t;
+}
+function initials(name) {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+}
+function scoreText(match) {
+  return (match.scoreA == null ? 0 : match.scoreA) + ' – ' + (match.scoreB == null ? 0 : match.scoreB);
+}
+
+// ---------- Match timer (screen-only, never saved) ----------
+const timer = { durationMin: 40, elapsedSec: 0, running: false, intervalId: null };
+function clockText(sec) { return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); }
+function liveMinute() { return Math.floor(timer.elapsedSec / 60); }
+
+function renderTimer() {
+  document.getElementById('match-timer').innerHTML = `
+    <div class="timer">
+      <div class="timer-clock" id="timer-clock">0:00</div>
+      <div class="timer-controls">
+        <label class="timer-field">Minutes
+          <input id="timer-minutes" type="number" min="1" value="${timer.durationMin}" />
+        </label>
+        <button type="button" id="timer-toggle" class="btn-small">Start</button>
+        <button type="button" id="timer-reset" class="btn-link">Reset</button>
+      </div>
+      <div class="timer-status" id="timer-status"></div>
+    </div>`;
+  updateTimerDisplay();
+}
+function updateTimerDisplay() {
+  const clock = document.getElementById('timer-clock');
+  if (clock) clock.textContent = clockText(timer.elapsedSec);
+  // Keep un-edited goal-minute boxes in sync with the live clock.
+  document.querySelectorAll('.goal-minute:not([data-touched])').forEach((inp) => { inp.value = liveMinute(); });
+}
+function stopTimer() {
+  clearInterval(timer.intervalId);
+  timer.intervalId = null;
+  timer.running = false;
+  const btn = document.getElementById('timer-toggle');
+  if (btn) btn.textContent = timer.elapsedSec > 0 ? 'Resume' : 'Start';
+}
+function tick() {
+  const total = timer.durationMin * 60;
+  timer.elapsedSec = Math.min(timer.elapsedSec + 1, total);
+  updateTimerDisplay();
+  if (timer.elapsedSec >= total) {
+    stopTimer();
+    const s = document.getElementById('timer-status'); if (s) s.textContent = 'Full Time';
+    const b = document.getElementById('timer-toggle'); if (b) b.textContent = 'Start';
+  }
+}
+function toggleTimer() {
+  if (timer.running) { stopTimer(); return; }
+  if (timer.elapsedSec >= timer.durationMin * 60) return; // full time — reset first
+  timer.running = true;
+  document.getElementById('timer-toggle').textContent = 'Pause';
+  document.getElementById('timer-status').textContent = '';
+  timer.intervalId = setInterval(tick, 1000);
+}
+function resetTimer() {
+  stopTimer();
+  timer.elapsedSec = 0;
+  const s = document.getElementById('timer-status'); if (s) s.textContent = '';
+  const b = document.getElementById('timer-toggle'); if (b) b.textContent = 'Start';
+  updateTimerDisplay();
+}
+
+// ---------- Load + overall render ----------
+let pendingPhotoPlayerId = null; // which player's disc opened the file picker
 
 async function loadMatchPage() {
   const el = document.getElementById('match-detail');
-  // Delegated listeners live on the container, which survives re-renders.
+  el.innerHTML =
+    '<div id="match-timer"></div>' +
+    '<input type="file" id="photo-file" accept="image/*" style="display:none" />' +
+    '<div id="match-body"><p class="loading">Loading match…</p></div>';
+
+  // One set of delegated listeners on the outer container (survives re-renders).
   el.addEventListener('click', onMatchClick);
   el.addEventListener('submit', onPhotoSubmit);
-  el.addEventListener('focusout', (e) => {
-    if (e.target.classList.contains('player-name')) savePlayerName(e.target);
-  });
+  el.addEventListener('focusout', (e) => { if (e.target.classList.contains('player-name')) savePlayerName(e.target); });
   el.addEventListener('keydown', (e) => {
     if (e.target.classList.contains('player-name') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
   });
-  await reloadMatch(getQueryParam('id'));
+  el.addEventListener('input', (e) => { if (e.target.classList.contains('goal-minute')) e.target.setAttribute('data-touched', '1'); });
+  el.addEventListener('change', (e) => {
+    if (e.target.id === 'timer-minutes') {
+      timer.durationMin = Math.max(1, Math.floor(Number(e.target.value) || 1));
+      if (timer.elapsedSec > timer.durationMin * 60) timer.elapsedSec = timer.durationMin * 60;
+      updateTimerDisplay();
+    } else if (e.target.id === 'photo-file') {
+      const file = e.target.files && e.target.files[0];
+      if (file && pendingPhotoPlayerId != null) uploadPhoto(pendingPhotoPlayerId, file);
+    } else if (e.target.classList.contains('rating-select')) {
+      saveRating(Number(e.target.dataset.player), e.target.value);
+    }
+  });
+  // Squad drag-to-reorder: the handle turns dragging on so the inputs still work.
+  el.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.squad-row .drag-handle');
+    if (handle) handle.closest('.squad-row').setAttribute('draggable', 'true');
+  });
+  el.addEventListener('dragstart', onSquadDragStart);
+  el.addEventListener('dragover', onSquadDragOver);
+  el.addEventListener('drop', (e) => e.preventDefault());
+  el.addEventListener('dragend', onSquadDragEnd);
+
+  renderTimer();
+  if (await refetch()) renderBody();
 }
 
-async function reloadMatch(id) {
-  const el = document.getElementById('match-detail');
+// Shrink a chosen image to a small square avatar and return it as a data URL.
+function resizeImage(file, size) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('That file is not an image.'));
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        const min = Math.min(img.width, img.height);        // crop to a centered square
+        ctx.drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadPhoto(playerId, file) {
   try {
-    const res = await fetch('/api/matches/' + id + '/detail');
+    const dataUrl = await resizeImage(file, 160);
+    const res = await fetch('/api/players/' + playerId + '/photo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo: dataUrl }),
+    });
+    if (!res.ok) throw new Error('upload failed');
+    for (const team of [matchDetail.teamA, matchDetail.teamB]) {
+      const p = team.players.find((pl) => pl.id === playerId);
+      if (p) p.photo = dataUrl;
+    }
+    // Update the pitch disc and the squad-list avatar for this player.
+    document.querySelectorAll('.player-disc[data-disc="' + playerId + '"], .squad-avatar[data-avatar="' + playerId + '"]').forEach((el) => {
+      el.classList.add('has-photo'); el.textContent = ''; el.style.backgroundImage = "url('" + dataUrl + "')";
+    });
+  } catch (_) { /* soft-fail; the photo just won't change */ }
+}
+
+// Save a player's rating for this match (1-10, or blank to clear).
+async function saveRating(playerId, value) {
+  const rating = value === '' ? null : Number(value);
+  for (const team of [matchDetail.teamA, matchDetail.teamB]) {
+    const p = team.players.find((pl) => pl.id === playerId);
+    if (p) p.rating = rating;
+  }
+  try {
+    await fetch('/api/matches/' + matchDetail.match.id + '/ratings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playerId, rating }),
+    });
+  } catch (_) { /* soft-fail; the reload on next visit will re-sync */ }
+}
+
+async function refetch() {
+  try {
+    const res = await fetch('/api/matches/' + getQueryParam('id') + '/detail');
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || 'Could not load this match.');
     matchDetail = body;
-    renderMatchDetail();
+    return true;
   } catch (err) {
-    el.innerHTML = `<p class="empty">${escapeHtml(err.message)}</p>`;
+    document.getElementById('match-body').innerHTML = `<p class="empty">${escapeHtml(err.message)}</p>`;
+    matchDetail = null;
+    return false;
   }
 }
 
-function renderMatchDetail() {
+function renderBody() {
   const { match, tournament, teamA, teamB } = matchDetail;
   const back = document.getElementById('back-link');
   back.href = '/tournament.html?id=' + tournament.id;
   back.textContent = '← Back to ' + tournament.name;
 
-  const scoreA = match.scoreA == null ? 0 : match.scoreA;
-  const scoreB = match.scoreB == null ? 0 : match.scoreB;
-
-  document.getElementById('match-detail').innerHTML = `
+  document.getElementById('match-body').innerHTML = `
     <div class="match-detail-header">
       <span class="badge badge-football">⚽ Football</span>
       <div class="md-scoreline">
         <span class="md-team">${escapeHtml(teamA.name)}</span>
-        <span class="md-score">${scoreA} – ${scoreB}</span>
+        <span class="md-score" id="md-score">${scoreText(match)}</span>
         <span class="md-team">${escapeHtml(teamB.name)}</span>
       </div>
       <p class="card-meta">${escapeHtml(tournament.name)} · 📅 ${formatDate(tournament.date)}${tournament.time ? ' · ' + formatTime(tournament.time) : ''}</p>
     </div>
 
     <h2>Lineups</h2>
-    <div class="md-columns">${lineupHtml(teamA)}${lineupHtml(teamB)}</div>
+    <div id="pitch-area"></div>
+
+    <h2>Squad <span class="squad-hint">— first 5 start; drag to change the lineup</span></h2>
+    <div id="squad-area"></div>
 
     <h2>Goals</h2>
-    <div id="goals-area" class="md-columns"></div>
+    <div id="goals-area"></div>
+
+    <h2>Man of the Match</h2>
+    <div id="motm-area"></div>
 
     <h2>Match Photos</h2>
-    ${photoHtml(match)}
+    <div id="photo-area"></div>
   `;
+  renderPitch();
+  renderSquadArea();
   renderGoalsArea();
+  renderMotmArea();
+  renderPhotoArea();
 }
 
-function lineupHtml(team) {
+function updateScore() {
+  const el = document.getElementById('md-score');
+  if (el) el.textContent = scoreText(matchDetail.match);
+}
+
+// ---------- The pitch (the starting five) ----------
+function renderPitch() {
+  const area = document.getElementById('pitch-area');
+  if (area) area.innerHTML = pitchHtml(matchDetail.teamA, matchDetail.teamB);
+}
+function pitchHtml(teamA, teamB) {
+  const player = (p, side) => {
+    const spot = PITCH_SPOTS[side][p.slot] || { x: 50, y: 50 };
+    const disc = p.photo
+      ? `<span class="player-disc disc-${side} has-photo" data-disc="${p.id}" role="button" tabindex="0" title="Change photo" style="background-image:url('${p.photo}')"></span>`
+      : `<span class="player-disc disc-${side}" data-disc="${p.id}" role="button" tabindex="0" title="Add photo">${escapeHtml(initials(p.name))}</span>`;
+    return `
+      <div class="pitch-player" style="left:${spot.x}%;top:${spot.y}%">
+        ${disc}
+        <input class="player-name pitch-name" data-player="${p.id}" value="${escapeHtml(p.name || '')}" placeholder="Add name" autocomplete="off" aria-label="Player name" />
+      </div>`;
+  };
+  const starters = (players) => players.filter((p) => p.slot < 5); // only the first five are on the pitch
   return `
-    <div class="md-col">
-      <h3 class="md-col-title">${escapeHtml(team.name)}</h3>
-      <div class="lineup">
-        ${team.players.map((p) => `
-          <label class="player-slot">
-            <span class="player-pos">${p.position}</span>
-            <input class="player-name" type="text" data-player="${p.id}" value="${escapeHtml(p.name || '')}" placeholder="Add name" autocomplete="off" />
-          </label>`).join('')}
-      </div>
+    <div class="pitch" role="img" aria-label="Match lineup on a football pitch">
+      <div class="pitch-line pitch-halfway"></div>
+      <div class="pitch-circle"></div>
+      <div class="pitch-box pitch-box-top"></div>
+      <div class="pitch-box pitch-box-bottom"></div>
+      <span class="pitch-team-label label-top">${escapeHtml(teamB.name)}</span>
+      <span class="pitch-team-label label-bottom">${escapeHtml(teamA.name)}</span>
+      ${starters(teamB.players).map((p) => player(p, 'B')).join('')}
+      ${starters(teamA.players).map((p) => player(p, 'A')).join('')}
     </div>`;
 }
 
-// Rebuild just the goals section (used after a name change so the scorer
-// dropdowns refresh without disturbing the lineup inputs you're editing).
+// ---------- The squad list (starters + substitutes, per team) ----------
+function renderSquadArea() {
+  const area = document.getElementById('squad-area');
+  if (area) area.innerHTML = `<div class="md-columns">${squadColumnHtml(matchDetail.teamA)}${squadColumnHtml(matchDetail.teamB)}</div>`;
+}
+
+function ratingSelectHtml(playerId, rating) {
+  let opts = '<option value="">–</option>';
+  for (let n = 1; n <= 10; n++) opts += `<option value="${n}"${rating === n ? ' selected' : ''}>${n}</option>`;
+  return `<select class="rating-select" data-player="${playerId}" aria-label="Rating out of 10" title="Rating (1–10)">${opts}</select>`;
+}
+
+function squadRowHtml(p, isSub) {
+  const avatar = p.photo
+    ? `<span class="squad-avatar has-photo" data-avatar="${p.id}" role="button" tabindex="0" title="Change photo" style="background-image:url('${p.photo}')"></span>`
+    : `<span class="squad-avatar" data-avatar="${p.id}" role="button" tabindex="0" title="Add photo">${escapeHtml(initials(p.name))}</span>`;
+  return `
+    <div class="squad-row" data-player="${p.id}">
+      <span class="drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
+      ${avatar}
+      <input class="player-name squad-name" data-player="${p.id}" value="${escapeHtml(p.name || '')}" placeholder="Add name" autocomplete="off" aria-label="Player name" />
+      ${ratingSelectHtml(p.id, p.rating)}
+      <span class="squad-move">
+        <button type="button" class="sq-up" data-player="${p.id}" aria-label="Move up" title="Move up">▲</button>
+        <button type="button" class="sq-down" data-player="${p.id}" aria-label="Move down" title="Move down">▼</button>
+      </span>
+      ${isSub
+        ? `<button type="button" class="btn-link remove-player" data-player="${p.id}" aria-label="Remove player" title="Remove player">✕</button>`
+        : '<span class="remove-spacer"></span>'}
+    </div>`;
+}
+
+function squadColumnHtml(team) {
+  const players = team.players.slice().sort((a, b) => a.slot - b.slot);
+  const starters = players.slice(0, 5);
+  const subs = players.slice(5);
+  return `
+    <div class="md-col squad-col">
+      <h3 class="md-col-title">${escapeHtml(team.name)}</h3>
+      <div class="squad-list" data-team="${team.id}">
+        <div class="squad-section">Starting 5</div>
+        ${starters.map((p) => squadRowHtml(p, false)).join('')}
+        <div class="squad-section">Substitutes</div>
+        ${subs.length ? subs.map((p) => squadRowHtml(p, true)).join('') : '<p class="squad-empty">No substitutes yet.</p>'}
+      </div>
+      <button type="button" class="btn-small add-sub" data-team="${team.id}">+ Add substitute</button>
+    </div>`;
+}
+
+// Reorder helpers (drag + ▲▼ buttons) for the squad lists.
+let squadDragEl = null;
+function onSquadDragStart(event) {
+  const row = event.target.closest('.squad-row');
+  if (!row) return;
+  squadDragEl = row;
+  row.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  try { event.dataTransfer.setData('text/plain', row.dataset.player); } catch (_) {}
+}
+function onSquadDragOver(event) {
+  if (!squadDragEl) return;
+  const list = event.target.closest('.squad-list');
+  if (!list || list !== squadDragEl.parentElement) return; // stay within the same team
+  event.preventDefault();
+  const rows = [...list.querySelectorAll('.squad-row:not(.dragging)')];
+  let after = null, closest = -Infinity;
+  for (const row of rows) {
+    const box = row.getBoundingClientRect();
+    const offset = event.clientY - box.top - box.height / 2;
+    if (offset < 0 && offset > closest) { closest = offset; after = row; }
+  }
+  if (after == null) list.appendChild(squadDragEl);
+  else list.insertBefore(squadDragEl, after);
+}
+async function onSquadDragEnd() {
+  if (!squadDragEl) return;
+  const list = squadDragEl.parentElement;
+  squadDragEl.classList.remove('dragging');
+  squadDragEl.setAttribute('draggable', 'false');
+  squadDragEl = null;
+  if (list && list.classList.contains('squad-list')) await persistSquadOrder(list);
+}
+function moveSquadRow(row, direction) {
+  const list = row.parentElement;
+  const rows = [...list.querySelectorAll('.squad-row')];
+  const target = rows[rows.indexOf(row) + direction];
+  if (!target) return;
+  if (direction < 0) list.insertBefore(row, target);
+  else list.insertBefore(target, row);
+}
+async function persistSquadOrder(list) {
+  const teamId = list.dataset.team;
+  const playerIds = [...list.querySelectorAll('.squad-row')].map((el) => Number(el.dataset.player));
+  try {
+    const res = await fetch('/api/teams/' + teamId + '/players/reorder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playerIds }),
+    });
+    if (!res.ok) throw new Error('reorder failed');
+  } catch (_) { /* the reload below restores the server order */ }
+  if (await refetch()) { renderPitch(); renderSquadArea(); }
+}
+
+// ---------- Goals: ordered list + per-team add controls ----------
 function renderGoalsArea() {
   const area = document.getElementById('goals-area');
   if (!area) return;
   const { teamA, teamB, goals } = matchDetail;
-  area.innerHTML =
-    goalColumnHtml(teamA, goals.filter((g) => g.teamId === teamA.id)) +
-    goalColumnHtml(teamB, goals.filter((g) => g.teamId === teamB.id));
-}
+  const teamName = (id) => (id === teamA.id ? teamA.name : teamB.name);
+  const teamSide = (id) => (id === teamA.id ? 'a' : 'b');
 
-function goalColumnHtml(team, teamGoals) {
-  const named = team.players.filter((p) => p.name && p.name.trim());
-  const adder = named.length
-    ? `<div class="goal-adder">
-         <select class="goal-select" data-team="${team.id}" aria-label="Scorer for ${escapeHtml(team.name)}">
-           ${named.map((p) => `<option value="${p.id}">${escapeHtml(p.name)} · ${p.position}</option>`).join('')}
-         </select>
-         <button type="button" class="btn-small add-goal" data-team="${team.id}">+ Goal</button>
-       </div>`
-    : `<p class="hint-small">Add player names above to record goal scorers.</p>`;
-  const list = teamGoals.length
-    ? `<ul class="goal-list">${teamGoals.map((g) => `
+  const list = goals.length
+    ? `<ol class="scorer-list">${goals.map((g) => `
          <li>
-           <span class="goal-scorer">⚽ ${escapeHtml(g.playerName || POSITIONS[g.playerSlot] || 'Player')}</span>
+           <span class="goal-minute-badge">${g.minute == null ? "—" : g.minute + "'"}</span>
+           <span class="goal-name">⚽ ${escapeHtml(g.playerName || 'Player')}</span>
+           <span class="goal-team team-${teamSide(g.teamId)}">${escapeHtml(teamName(g.teamId))}</span>
            <button type="button" class="btn-link remove-goal" data-goal="${g.id}" aria-label="Remove goal" title="Remove goal">✕</button>
-         </li>`).join('')}</ul>`
+         </li>`).join('')}</ol>`
     : `<p class="empty">No goals yet.</p>`;
-  return `<div class="md-col"><h3 class="md-col-title">${escapeHtml(team.name)}</h3>${adder}${list}</div>`;
+
+  area.innerHTML = list + `<div class="goal-adders">${goalAdder(teamA)}${goalAdder(teamB)}</div>`;
 }
 
-function photoHtml(match) {
-  const url = match.photoUrl || '';
+function goalAdder(team) {
+  const named = team.players.filter((p) => p.name && p.name.trim());
+  if (!named.length) {
+    return `<div class="goal-adder-col"><span class="goal-adder-team">${escapeHtml(team.name)}</span><p class="hint-small">Name players on the pitch to record scorers.</p></div>`;
+  }
+  return `
+    <div class="goal-adder-col">
+      <span class="goal-adder-team">${escapeHtml(team.name)}</span>
+      <div class="goal-adder">
+        <select class="goal-select" data-team="${team.id}" aria-label="Scorer for ${escapeHtml(team.name)}">
+          ${named.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+        </select>
+        <input class="goal-minute" type="number" min="0" inputmode="numeric" value="${liveMinute()}" aria-label="Minute" title="Minute" />
+        <button type="button" class="btn-small add-goal" data-team="${team.id}">+ Goal</button>
+      </div>
+    </div>`;
+}
+
+// ---------- Man of the Match voting ----------
+function renderMotmArea() {
+  const area = document.getElementById('motm-area');
+  if (!area) return;
+  const { match, teamA, teamB } = matchDetail;
+  const players = [
+    ...teamA.players.filter((p) => p.name && p.name.trim()).map((p) => ({ ...p, teamName: teamA.name, side: 'a' })),
+    ...teamB.players.filter((p) => p.name && p.name.trim()).map((p) => ({ ...p, teamName: teamB.name, side: 'b' })),
+  ].sort((x, y) => y.votes - x.votes || x.name.localeCompare(y.name));
+
+  if (!players.length) {
+    area.innerHTML = `<p class="hint-small">Name the players on the pitch to open Man-of-the-Match voting.</p>`;
+    return;
+  }
+
+  const votedFor = localStorage.getItem('motm-voted-' + match.id); // player id, or null
+  const maxVotes = players.reduce((m, p) => Math.max(m, p.votes), 0);
+
+  area.innerHTML = `
+    <p class="hint-small">${votedFor ? 'Thanks for voting — one vote per device.' : 'Vote for the best player. One vote per device, no login.'}</p>
+    <ul class="motm-list">
+      ${players.map((p) => {
+        const isLeader = maxVotes > 0 && p.votes === maxVotes;
+        const youVoted = votedFor && Number(votedFor) === p.id;
+        return `
+          <li class="motm-row${isLeader ? ' leader' : ''}${youVoted ? ' you-voted' : ''}">
+            ${isLeader ? '<span class="motm-crown" title="Current leader">👑</span>' : '<span class="motm-crown"></span>'}
+            <span class="motm-name">${escapeHtml(p.name)}</span>
+            <span class="motm-team team-${p.side}">${escapeHtml(p.teamName)}</span>
+            <span class="motm-count">${p.votes}</span>
+            ${votedFor
+              ? `<span class="motm-voted">${youVoted ? '✓ Your vote' : ''}</span>`
+              : `<button type="button" class="btn-small vote-btn" data-player="${p.id}">Vote</button>`}
+          </li>`;
+      }).join('')}
+    </ul>`;
+}
+
+// ---------- Photo ----------
+function renderPhotoArea() {
+  const area = document.getElementById('photo-area');
+  if (!area) return;
+  const url = matchDetail.match.photoUrl || '';
   const button = url
     ? `<a class="btn-primary photo-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">📷 Match Photos</a>`
     : '';
-  return `
+  area.innerHTML = `
     <div class="photo-section">
       <form class="photo-form" id="photo-form">
         <input id="photo-url" type="url" placeholder="Paste a Google Drive album link" value="${escapeHtml(url)}" autocomplete="off" />
@@ -610,43 +1013,99 @@ function photoHtml(match) {
     </div>`;
 }
 
-// Save a player's name (on blur or Enter). Only rebuild the dropdowns when a
-// player becomes named/unnamed, so editing a spelling doesn't disrupt anything.
+// ---------- Actions ----------
 async function savePlayerName(input) {
   const id = Number(input.dataset.player);
   const name = input.value.trim();
-  let membershipChanged = false;
   for (const team of [matchDetail.teamA, matchDetail.teamB]) {
     const p = team.players.find((pl) => pl.id === id);
-    if (p) {
-      const wasNamed = !!(p.name && p.name.trim());
-      p.name = name;
-      if (wasNamed !== !!name) membershipChanged = true;
-    }
+    if (p) p.name = name;
   }
+  // Keep this player's other name fields (pitch + squad list) in sync.
+  document.querySelectorAll('.player-name[data-player="' + id + '"]').forEach((el) => { if (el !== input) el.value = name; });
+  // Update the initials on the pitch disc and squad avatar (unless a photo shows).
+  document.querySelectorAll('.player-disc[data-disc="' + id + '"], .squad-avatar[data-avatar="' + id + '"]').forEach((el) => {
+    if (!el.classList.contains('has-photo')) el.textContent = initials(name);
+  });
   try {
     await fetch('/api/players/' + id, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
     });
   } catch (_) { /* will re-sync on next load */ }
-  if (membershipChanged) renderGoalsArea();
+  renderGoalsArea();  // refresh scorer dropdowns
+  renderMotmArea();   // refresh voting options
 }
 
 async function onMatchClick(event) {
-  const add = event.target.closest('.add-goal');
-  if (add) {
-    const select = document.querySelector('.goal-select[data-team="' + add.dataset.team + '"]');
-    if (!select || !select.value) return;
-    await fetch('/api/matches/' + matchDetail.match.id + '/goals', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playerId: Number(select.value) }),
-    });
-    await reloadMatch(matchDetail.match.id);
+  // Timer controls.
+  if (event.target.closest('#timer-toggle')) { toggleTimer(); return; }
+  if (event.target.closest('#timer-reset')) { resetTimer(); return; }
+
+  // Tap a player's circle (pitch) or avatar (squad list) to add/replace a photo.
+  const photoTarget = event.target.closest('.player-disc, .squad-avatar');
+  if (photoTarget) {
+    pendingPhotoPlayerId = Number(photoTarget.dataset.disc || photoTarget.dataset.avatar);
+    const fileInput = document.getElementById('photo-file');
+    fileInput.value = ''; // let the same file be picked again
+    fileInput.click();
     return;
   }
+
+  // Squad: add a substitute, remove a player, or nudge the order with ▲▼.
+  const addSub = event.target.closest('.add-sub');
+  if (addSub) {
+    await fetch('/api/teams/' + addSub.dataset.team + '/players', { method: 'POST' });
+    if (await refetch()) renderSquadArea();
+    return;
+  }
+  const removePlayer = event.target.closest('.remove-player');
+  if (removePlayer) {
+    const res = await fetch('/api/players/' + removePlayer.dataset.player, { method: 'DELETE' });
+    if (res.ok && (await refetch())) { renderPitch(); renderSquadArea(); }
+    return;
+  }
+  const sqUp = event.target.closest('.sq-up');
+  if (sqUp) { const row = sqUp.closest('.squad-row'); const list = row.parentElement; moveSquadRow(row, -1); await persistSquadOrder(list); return; }
+  const sqDown = event.target.closest('.sq-down');
+  if (sqDown) { const row = sqDown.closest('.squad-row'); const list = row.parentElement; moveSquadRow(row, 1); await persistSquadOrder(list); return; }
+
+  // Add a goal (with the minute from the box next to it).
+  const add = event.target.closest('.add-goal');
+  if (add) {
+    const wrap = add.closest('.goal-adder');
+    const select = wrap.querySelector('.goal-select');
+    const minuteInput = wrap.querySelector('.goal-minute');
+    if (!select || !select.value) return;
+    const minute = minuteInput && minuteInput.value !== '' ? Number(minuteInput.value) : liveMinute();
+    await fetch('/api/matches/' + matchDetail.match.id + '/goals', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId: Number(select.value), minute }),
+    });
+    if (await refetch()) { updateScore(); renderGoalsArea(); }
+    return;
+  }
+
+  // Remove a goal.
   const remove = event.target.closest('.remove-goal');
   if (remove) {
     await fetch('/api/goals/' + remove.dataset.goal, { method: 'DELETE' });
-    await reloadMatch(matchDetail.match.id);
+    if (await refetch()) { updateScore(); renderGoalsArea(); }
+    return;
+  }
+
+  // Cast a Man-of-the-Match vote.
+  const vote = event.target.closest('.vote-btn');
+  if (vote) {
+    const playerId = Number(vote.dataset.player);
+    try {
+      const res = await fetch('/api/matches/' + matchDetail.match.id + '/vote', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId, voterToken: voterToken() }),
+      });
+      // ok = counted; 409 = this device already voted. Either way, lock voting here.
+      if (res.ok || res.status === 409) localStorage.setItem('motm-voted-' + matchDetail.match.id, String(playerId));
+    } catch (_) { /* refetch below shows current state */ }
+    if (await refetch()) renderMotmArea();
   }
 }
 
@@ -662,7 +1121,7 @@ async function onPhotoSubmit(event) {
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || 'Could not save the link.');
     matchDetail.match.photoUrl = body.photoUrl;
-    renderMatchDetail();
+    renderPhotoArea();
   } catch (err) {
     msg.textContent = err.message;
   }
