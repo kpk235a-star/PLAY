@@ -576,21 +576,41 @@ app.get('/api/matches/:id/detail', (req, res) => {
     ORDER BY (g.minute IS NULL), g.minute, g.id
   `).all(id);
 
+  const voterToken = (req.query.voter || '').toString();
+
   // Man-of-the-Match vote tallies for this match (player id -> count).
   const voteRows = db
     .prepare('SELECT player_id AS playerId, COUNT(*) AS votes FROM votes WHERE match_id = ? GROUP BY player_id')
     .all(id);
   const votesByPlayer = {};
   for (const r of voteRows) votesByPlayer[r.playerId] = r.votes;
+  const myVoteRow = voterToken
+    ? db.prepare('SELECT player_id AS playerId FROM votes WHERE match_id = ? AND voter_token = ?').get(id, voterToken)
+    : null;
 
-  // Per-match player ratings (player id -> 1..10).
-  const ratingRows = db.prepare('SELECT player_id AS playerId, rating FROM ratings WHERE match_id = ?').all(id);
+  // Player ratings: the shown value is the average across all voters.
+  const ratingRows = db
+    .prepare('SELECT player_id AS playerId, AVG(rating) AS avg, COUNT(*) AS cnt FROM ratings WHERE match_id = ? GROUP BY player_id')
+    .all(id);
   const ratingByPlayer = {};
-  for (const r of ratingRows) ratingByPlayer[r.playerId] = r.rating;
+  for (const r of ratingRows) ratingByPlayer[r.playerId] = { avg: Math.round(r.avg * 10) / 10, cnt: r.cnt };
+  // This device's own ratings (so the picker shows what you chose).
+  const myRatingByPlayer = {};
+  if (voterToken) {
+    for (const r of db.prepare('SELECT player_id AS playerId, rating FROM ratings WHERE match_id = ? AND voter_token = ?').all(id, voterToken)) {
+      myRatingByPlayer[r.playerId] = r.rating;
+    }
+  }
 
-  // Attach this match's votes + rating to each player.
+  // Attach this match's votes + rating info to each player.
   const enrich = (players) =>
-    players.map((p) => ({ ...p, votes: votesByPlayer[p.id] || 0, rating: ratingByPlayer[p.id] ?? null }));
+    players.map((p) => ({
+      ...p,
+      votes: votesByPlayer[p.id] || 0,
+      rating: ratingByPlayer[p.id] ? ratingByPlayer[p.id].avg : null,
+      ratingCount: ratingByPlayer[p.id] ? ratingByPlayer[p.id].cnt : 0,
+      myRating: myRatingByPlayer[p.id] ?? null,
+    }));
 
   res.json({
     match: { id: match.id, scoreA: match.score_a, scoreB: match.score_b, photoUrl: match.photo_url },
@@ -598,6 +618,7 @@ app.get('/api/matches/:id/detail', (req, res) => {
     teamA: { id: teamA.id, name: teamA.name, players: enrich(ensurePlayers(teamA.id)) },
     teamB: { id: teamB.id, name: teamB.name, players: enrich(ensurePlayers(teamB.id)) },
     goals,
+    myVote: myVoteRow ? myVoteRow.playerId : null,
   });
 });
 
@@ -695,7 +716,9 @@ app.post('/api/teams/:id/players/reorder', (req, res) => {
   res.json({ ok: true });
 });
 
-// Set (or clear) a player's rating for THIS match. Body: { playerId, rating }.
+// Rate a player for THIS match (a public vote). Body: { playerId, rating,
+// voterToken }. Each device rates each player once and can change it; blank
+// rating removes this device's rating for that player.
 app.post('/api/matches/:id/ratings', (req, res) => {
   const id = Number(req.params.id);
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
@@ -704,17 +727,21 @@ app.post('/api/matches/:id/ratings', (req, res) => {
   if (!player || (player.team_id !== match.team_a_id && player.team_id !== match.team_b_id)) {
     return res.status(400).json({ error: 'That player is not in this match.' });
   }
+  const voterToken = (req.body.voterToken || '').trim();
+  if (!voterToken) return res.status(400).json({ error: 'Missing voter token.' });
+
   const raw = req.body.rating;
   if (raw === null || raw === '' || raw === undefined) {
-    db.prepare('DELETE FROM ratings WHERE match_id = ? AND player_id = ?').run(id, player.id);
+    db.prepare('DELETE FROM ratings WHERE match_id = ? AND player_id = ? AND voter_token = ?').run(id, player.id, voterToken);
     return res.json({ ok: true, rating: null });
   }
   const rating = Math.floor(Number(raw));
   if (!Number.isInteger(rating) || rating < 1 || rating > 10) {
     return res.status(400).json({ error: 'Rating must be a whole number from 1 to 10.' });
   }
-  db.prepare(`INSERT INTO ratings (match_id, player_id, rating) VALUES (?, ?, ?)
-              ON CONFLICT(match_id, player_id) DO UPDATE SET rating = excluded.rating`).run(id, player.id, rating);
+  db.prepare(`INSERT INTO ratings (match_id, player_id, voter_token, rating) VALUES (?, ?, ?, ?)
+              ON CONFLICT(match_id, player_id, voter_token) DO UPDATE SET rating = excluded.rating`)
+    .run(id, player.id, voterToken, rating);
   res.json({ ok: true, rating });
 });
 
@@ -766,7 +793,8 @@ app.post('/api/matches/:id/photo', (req, res) => {
 });
 
 // Cast a Man-of-the-Match vote. Body: { playerId, voterToken }.
-// The UNIQUE(match_id, voter_token) rule allows one vote per device per match.
+// One vote per device per match (UNIQUE(match_id, voter_token)), and you can
+// change it: voting again just moves your vote to the new player.
 app.post('/api/matches/:id/vote', (req, res) => {
   const id = Number(req.params.id);
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
@@ -780,19 +808,14 @@ app.post('/api/matches/:id/vote', (req, res) => {
   const voterToken = (req.body.voterToken || '').trim();
   if (!voterToken) return res.status(400).json({ error: 'Missing voter token.' });
 
-  try {
-    db.prepare('INSERT INTO votes (match_id, player_id, voter_token) VALUES (?, ?, ?)').run(id, player.id, voterToken);
-  } catch (err) {
-    if (String(err).includes('UNIQUE')) {
-      return res.status(409).json({ error: 'This device has already voted in this match.' });
-    }
-    throw err;
-  }
+  db.prepare(`INSERT INTO votes (match_id, player_id, voter_token) VALUES (?, ?, ?)
+              ON CONFLICT(match_id, voter_token) DO UPDATE SET player_id = excluded.player_id`)
+    .run(id, player.id, voterToken);
 
   const counts = db
     .prepare('SELECT player_id AS playerId, COUNT(*) AS votes FROM votes WHERE match_id = ? GROUP BY player_id')
     .all(id);
-  res.status(201).json({ ok: true, counts });
+  res.json({ ok: true, counts });
 });
 
 // =============================================================================

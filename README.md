@@ -14,7 +14,8 @@ JavaScript** for the pages — no build step, nothing to compile.
 ## What it does
 
 - See a list of **tournaments** (name, sport, date, time, location).
-- **Create a tournament** from a form, then **add teams** one at a time.
+- **Create a tournament** from a form, then **add teams** one at a time. You can
+  **rename a team** anytime on the Manage-teams page.
 - **Generate the schedule automatically** based on the number of teams:
   - **2–3 teams** → one group, round robin (no knockout — the table winner wins).
   - **4–5 teams** → one group, then semifinals (top 4: 1v4, 2v3) and a final.
@@ -26,12 +27,16 @@ JavaScript** for the pages — no build step, nothing to compile.
   the previous round is decided — ending in a 🏆 champion.
 - **Football only:** click a match to open its **detail page**, which has a
   **visual pitch** (both teams in a 1‑2‑2 — tap a name to edit it, tap a circle
-  to **add a player photo**), a **match timer** (counts up to a duration you
-  set), an ordered **goal list** with the scorer, team, and **minute** (the
-  score updates from the goals), **Man of the Match voting** (one vote per
-  device, no login, current leader highlighted), and a **Match Photos** link (a
-  Google Drive album). The football tournament page also shows a **Top Scorers**
-  ranking (top 5, expandable). Basketball and tennis don't have these yet.
+  to **add a player photo**) plus an editable **squad list** below it: the first
+  5 are the starters (on the pitch), you can **add substitutes**, **drag** (or
+  ▲▼) a player into the top 5 to put them on the field, and **rate each player
+  1–10** (anyone with the link can rate — the app shows the average, and you can
+  change your rating). It also has a **match timer**, an ordered **goal list**
+  with scorer/team/**minute** (the score updates from the goals), **Man of the
+  Match voting** (one vote per device, no login, leader highlighted — and you
+  can change your vote), and a **Match Photos** link. The football tournament page also
+  shows a **Top Scorers** ranking (top 5, expandable). Basketball and tennis
+  don't have these yet.
 
 Scoring for standings: **win = 3 points, draw = 1, loss = 0.** Standings are
 calculated from the match results, never stored.
@@ -131,14 +136,19 @@ team-sports/
   `source_a` / `source_b` code (e.g. `A1` = "1st of Group A", `W1` = "winner of
   semifinal 1") and a blank score until played. Also carry `sort_order` (fixture
   order — drag to change) and, for football, a `photo_url`.
-- **players** *(football only)* — a team's 5-slot roster: `team_id`, `slot`
-  (0–4, which gives the position label), `name`, `photo` (a small avatar image
-  stored inline). Created the first time you open one of the team's matches.
+- **players** *(football only)* — a team's squad: `team_id`, `slot` (the order —
+  the first 5 are the starters on the pitch, the rest are substitutes), `name`,
+  `photo` (a small avatar image stored inline). Created the first time you open
+  one of the team's matches; add more as substitutes.
 - **goals** *(football only)* — one row per goal: `match_id`, `player_id`,
   `minute`. A football match's score is simply its goal count.
 - **votes** *(football only)* — Man-of-the-Match votes: `match_id`, `player_id`,
   `voter_token`, with `UNIQUE(match_id, voter_token)` so each device votes once
   per match.
+- **ratings** *(football only)* — player ratings as a public vote: `match_id`,
+  `player_id`, `voter_token`, `rating` (1–10), with
+  `UNIQUE(match_id, player_id, voter_token)`. The shown rating is the average
+  across voters; each device can change its vote.
 
 Standings are **not** stored — they're calculated from the played matches (see
 `standingsFor` in `server.js`). Knockout teams are filled in by `resolveBracket`

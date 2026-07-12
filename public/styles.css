@@ -728,3 +728,17 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
 }
 .team-name-input:hover { background: #fff; }
 .team-name-input:focus { outline: none; background: #fff; box-shadow: 0 0 0 2px var(--primary); }
+
+/* ---------- Rating vote (squad) + changeable MotM vote ---------- */
+.rating-select { width: 46px; }               /* your vote */
+.rating-cell { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
+.rating-avg {                                  /* the crowd average */
+  min-width: 18px; text-align: center;
+  font-size: 0.78rem; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.rating-avg small { font-weight: 400; color: var(--muted); font-size: 0.68rem; }
+.rating-avg.empty { color: var(--muted); font-weight: 400; }
+.vote-btn.voted { background: #16a34a; }
+.vote-btn.voted:hover { background: #15803d; }
+.motm-row.you-voted { border-color: #86efac; }

@@ -102,14 +102,16 @@ db.exec(`
     FOREIGN KEY (player_id) REFERENCES players(id)  ON DELETE CASCADE
   );
 
-  -- Football only: a per-match player rating (1-10). One rating per player per
-  -- match (UNIQUE), overwritten when changed.
+  -- Football only: player ratings (1-10) as a public vote. Each device
+  -- (voter_token) rates each player once per match, and can change it (UNIQUE).
+  -- The displayed rating is the average across all voters.
   CREATE TABLE IF NOT EXISTS ratings (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    match_id  INTEGER NOT NULL,
-    player_id INTEGER NOT NULL,
-    rating    INTEGER NOT NULL,
-    UNIQUE (match_id, player_id),
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id    INTEGER NOT NULL,
+    player_id   INTEGER NOT NULL,
+    voter_token TEXT    NOT NULL,
+    rating      INTEGER NOT NULL,
+    UNIQUE (match_id, player_id, voter_token),
     FOREIGN KEY (match_id)  REFERENCES matches(id)  ON DELETE CASCADE,
     FOREIGN KEY (player_id) REFERENCES players(id)  ON DELETE CASCADE
   );
@@ -180,6 +182,34 @@ addColumnIfMissing('goals', 'minute', 'INTEGER');
 
 // Player photos (added later): small avatar image stored as a data URL.
 addColumnIfMissing('players', 'photo', 'TEXT');
+
+// Ratings became a per-voter vote (added voter_token + a new UNIQUE rule). If an
+// older ratings table exists without voter_token, rebuild it, keeping old rows
+// as one "legacy" voter's ratings.
+if (columnNames('ratings').length && !columnNames('ratings').includes('voter_token')) {
+  db.pragma('foreign_keys = OFF');
+  const rebuildRatings = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE ratings_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_id    INTEGER NOT NULL,
+        player_id   INTEGER NOT NULL,
+        voter_token TEXT    NOT NULL,
+        rating      INTEGER NOT NULL,
+        UNIQUE (match_id, player_id, voter_token),
+        FOREIGN KEY (match_id)  REFERENCES matches(id)  ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id)  ON DELETE CASCADE
+      );
+      INSERT INTO ratings_new (id, match_id, player_id, voter_token, rating)
+        SELECT id, match_id, player_id, 'legacy', rating FROM ratings;
+      DROP TABLE ratings;
+      ALTER TABLE ratings_new RENAME TO ratings;
+    `);
+  });
+  rebuildRatings();
+  db.pragma('foreign_keys = ON');
+  console.log('Upgraded ratings to per-voter votes.');
+}
 
 // Hand this ready-to-use database connection to any file that needs it.
 module.exports = db;

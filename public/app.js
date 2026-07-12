@@ -712,23 +712,22 @@ async function uploadPhoto(playerId, file) {
   } catch (_) { /* soft-fail; the photo just won't change */ }
 }
 
-// Save a player's rating for this match (1-10, or blank to clear).
+// Cast (or change/clear) this device's rating vote for a player, then refresh
+// so the average updates.
 async function saveRating(playerId, value) {
   const rating = value === '' ? null : Number(value);
-  for (const team of [matchDetail.teamA, matchDetail.teamB]) {
-    const p = team.players.find((pl) => pl.id === playerId);
-    if (p) p.rating = rating;
-  }
   try {
     await fetch('/api/matches/' + matchDetail.match.id + '/ratings', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playerId, rating }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId, rating, voterToken: voterToken() }),
     });
-  } catch (_) { /* soft-fail; the reload on next visit will re-sync */ }
+  } catch (_) { /* soft-fail; a reload will re-sync */ }
+  if (await refetch()) renderSquadArea();
 }
 
 async function refetch() {
   try {
-    const res = await fetch('/api/matches/' + getQueryParam('id') + '/detail');
+    const res = await fetch('/api/matches/' + getQueryParam('id') + '/detail?voter=' + encodeURIComponent(voterToken()));
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || 'Could not load this match.');
     matchDetail = body;
@@ -821,10 +820,17 @@ function renderSquadArea() {
   if (area) area.innerHTML = `<div class="md-columns">${squadColumnHtml(matchDetail.teamA)}${squadColumnHtml(matchDetail.teamB)}</div>`;
 }
 
-function ratingSelectHtml(playerId, rating) {
+// A rating cell: this device's vote (a 1–10 picker) plus the average of everyone.
+function ratingCellHtml(p) {
   let opts = '<option value="">–</option>';
-  for (let n = 1; n <= 10; n++) opts += `<option value="${n}"${rating === n ? ' selected' : ''}>${n}</option>`;
-  return `<select class="rating-select" data-player="${playerId}" aria-label="Rating out of 10" title="Rating (1–10)">${opts}</select>`;
+  for (let n = 1; n <= 10; n++) opts += `<option value="${n}"${p.myRating === n ? ' selected' : ''}>${n}</option>`;
+  const avg = p.ratingCount
+    ? `<span class="rating-avg" title="${p.ratingCount} vote${p.ratingCount > 1 ? 's' : ''}">${p.rating}<small>·${p.ratingCount}</small></span>`
+    : '<span class="rating-avg empty" title="No ratings yet">–</span>';
+  return `<span class="rating-cell">
+      <select class="rating-select" data-player="${p.id}" aria-label="Your rating out of 10" title="Your rating (1–10)">${opts}</select>
+      ${avg}
+    </span>`;
 }
 
 function squadRowHtml(p, isSub) {
@@ -836,7 +842,7 @@ function squadRowHtml(p, isSub) {
       <span class="drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
       ${avatar}
       <input class="player-name squad-name" data-player="${p.id}" value="${escapeHtml(p.name || '')}" placeholder="Add name" autocomplete="off" aria-label="Player name" />
-      ${ratingSelectHtml(p.id, p.rating)}
+      ${ratingCellHtml(p)}
       <span class="squad-move">
         <button type="button" class="sq-up" data-player="${p.id}" aria-label="Move up" title="Move up">▲</button>
         <button type="button" class="sq-down" data-player="${p.id}" aria-label="Move down" title="Move down">▼</button>
@@ -971,24 +977,22 @@ function renderMotmArea() {
     return;
   }
 
-  const votedFor = localStorage.getItem('motm-voted-' + match.id); // player id, or null
+  const myVote = matchDetail.myVote; // the player id this device voted for, or null
   const maxVotes = players.reduce((m, p) => Math.max(m, p.votes), 0);
 
   area.innerHTML = `
-    <p class="hint-small">${votedFor ? 'Thanks for voting — one vote per device.' : 'Vote for the best player. One vote per device, no login.'}</p>
+    <p class="hint-small">Vote for the best player — one vote per device, and you can change it anytime.</p>
     <ul class="motm-list">
       ${players.map((p) => {
         const isLeader = maxVotes > 0 && p.votes === maxVotes;
-        const youVoted = votedFor && Number(votedFor) === p.id;
+        const youVoted = myVote === p.id;
         return `
           <li class="motm-row${isLeader ? ' leader' : ''}${youVoted ? ' you-voted' : ''}">
             ${isLeader ? '<span class="motm-crown" title="Current leader">👑</span>' : '<span class="motm-crown"></span>'}
             <span class="motm-name">${escapeHtml(p.name)}</span>
             <span class="motm-team team-${p.side}">${escapeHtml(p.teamName)}</span>
             <span class="motm-count">${p.votes}</span>
-            ${votedFor
-              ? `<span class="motm-voted">${youVoted ? '✓ Your vote' : ''}</span>`
-              : `<button type="button" class="btn-small vote-btn" data-player="${p.id}">Vote</button>`}
+            <button type="button" class="btn-small vote-btn${youVoted ? ' voted' : ''}" data-player="${p.id}">${youVoted ? '✓ Voted' : 'Vote'}</button>
           </li>`;
       }).join('')}
     </ul>`;
@@ -1098,14 +1102,12 @@ async function onMatchClick(event) {
   if (vote) {
     const playerId = Number(vote.dataset.player);
     try {
-      const res = await fetch('/api/matches/' + matchDetail.match.id + '/vote', {
+      await fetch('/api/matches/' + matchDetail.match.id + '/vote', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playerId, voterToken: voterToken() }),
       });
-      // ok = counted; 409 = this device already voted. Either way, lock voting here.
-      if (res.ok || res.status === 409) localStorage.setItem('motm-voted-' + matchDetail.match.id, String(playerId));
     } catch (_) { /* refetch below shows current state */ }
-    if (await refetch()) renderMotmArea();
+    if (await refetch()) renderMotmArea(); // moves/records your vote and updates counts
   }
 }
 
