@@ -14,7 +14,10 @@ JavaScript** for the pages — no build step, nothing to compile.
 ## What it does
 
 - See a list of **tournaments** (name, sport, date, time, location).
-- **Create a tournament** from a form, then **add teams** one at a time. You can
+- **Create a tournament** from a form — name, sport, date/time, a **location
+  name** with an optional **Google Maps link** (the page shows just the name as
+  a clickable link), and an optional **description** (rules, what to bring…)
+  shown under the tournament details. Then **add teams** one at a time; you can
   **rename a team** anytime on the Manage-teams page.
 - **Generate the schedule automatically** based on the number of teams:
   - **2–3 teams** → one group, round robin (no knockout — the table winner wins).
@@ -37,6 +40,15 @@ JavaScript** for the pages — no build step, nothing to compile.
   can change your vote), and a **Match Photos** link. The football tournament page also
   shows a **Top Scorers** ranking (top 5, expandable). Basketball and tennis
   don't have these yet.
+
+- **Admin codes:** every new tournament gets a 6-character code, shown once at
+  creation ("Save this code…"). Only someone who unlocked it (the **Admin**
+  button on the tournament page; remembered per device) can enter or edit
+  **scores and goals**, **regenerate the schedule**, **edit tournament
+  details**, or **remove a team** — enforced by the server, not just hidden
+  buttons. Everything else (viewing, registering teams + logos, player names,
+  voting, ratings, photo links) stays open to anyone with the link. Tournaments
+  created before this feature have no code and stay fully open.
 
 Scoring for standings: **win = 3 points, draw = 1, loss = 0.** Standings are
 calculated from the match results, never stored.
@@ -128,7 +140,11 @@ team-sports/
 
 ## The data model
 
-- **tournaments** — `name`, `sport`, `date`, `time`, `location`, `format`
+- **tournaments** — `name`, `sport`, `date`, `time`, `location` (short name),
+  `location_url` (optional Google Maps link shown behind the name),
+  `description` (optional notes), `format`, `admin_code` (6-char creator code;
+  sent as the `X-Admin-Code` header on protected requests and never included in
+  any API response after creation; `NULL` on older tournaments = open)
 - **teams** — `name`, `tournament_id`, `group_label` (`A`/`B`, set when the
   schedule is generated)
 - **matches** — every game (group, semifinal, and final) lives here, told apart

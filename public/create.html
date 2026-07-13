@@ -49,8 +49,19 @@
       </div>
 
       <label class="field">
-        <span class="field-label">Location</span>
-        <input name="location" type="text" placeholder="e.g. Riverside Park" autocomplete="off" required />
+        <span class="field-label">Location name</span>
+        <input name="location" type="text" placeholder="e.g. Népliget Football Pitch 3" autocomplete="off" required />
+      </label>
+
+      <label class="field">
+        <span class="field-label">Google Maps link <span class="optional">(optional)</span></span>
+        <input name="locationUrl" type="url" placeholder="Paste the Google Maps link here" autocomplete="off" />
+        <span class="field-help">Visitors will see only the location name — clicking it opens this link.</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">Description <span class="optional">(optional)</span></span>
+        <textarea name="description" rows="4" placeholder="Rules, what to bring, schedule notes…"></textarea>
       </label>
 
       <button type="submit">Create &amp; add teams →</button>

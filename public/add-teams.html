@@ -22,8 +22,28 @@
     <ol id="team-list" class="team-list"><li class="loading">Loading teams…</li></ol>
 
     <form id="add-team-form">
-      <input id="team-name" type="text" placeholder="Team name" autocomplete="off" />
-      <button type="submit">Add team</button>
+      <div class="add-team-row">
+        <span id="logo-preview" aria-hidden="true"></span>
+        <input id="team-name" type="text" placeholder="Team name" autocomplete="off" />
+        <button type="submit">Add team</button>
+      </div>
+
+      <!-- Logo builder: pick an icon + color, or upload a photo. app.js fills
+           the swatch rows and keeps the preview circle above in sync. -->
+      <div class="logo-builder" id="logo-builder">
+        <div class="logo-tabs" role="tablist">
+          <button type="button" class="logo-tab active" data-mode="icon">Icon</button>
+          <button type="button" class="logo-tab" data-mode="photo">Photo</button>
+        </div>
+        <div id="logo-icon-panel">
+          <div class="icon-swatches" id="icon-swatches"></div>
+          <div class="color-swatches" id="color-swatches"></div>
+        </div>
+        <div id="logo-photo-panel" hidden>
+          <input type="file" id="logo-file" accept="image/*" />
+          <p class="hint-small">The picture is shrunk and cropped to a circle automatically.</p>
+        </div>
+      </div>
     </form>
     <p id="form-message" class="form-message"></p>
 

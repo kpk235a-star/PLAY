@@ -296,14 +296,27 @@ function sourceLabel(code, format) {
   return format === 'one-group' ? `${ord} place` : `${ord}, Group ${code[0]}`;
 }
 
+// A team's logo, as one small object the pages can render:
+// an uploaded photo wins; otherwise a preset icon on a colored circle; all null
+// means "no logo" (the pages fall back to the team's first letter).
+function teamLogoOf(row) {
+  return { icon: row.logo_icon, color: row.logo_color, photo: row.logo_photo };
+}
+
 function getTournamentView(id) {
   const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
   if (!tournament) return null;
 
-  const teams = db.prepare('SELECT id, name, group_label FROM teams WHERE tournament_id = ? ORDER BY id').all(id);
+  const teams = db
+    .prepare('SELECT id, name, group_label, logo_icon, logo_color, logo_photo FROM teams WHERE tournament_id = ? ORDER BY id')
+    .all(id);
   const allMatches = db.prepare('SELECT * FROM matches WHERE tournament_id = ? ORDER BY sort_order, id').all(id);
   const nameById = {};
-  for (const t of teams) nameById[t.id] = t.name;
+  const logoById = {};
+  for (const t of teams) {
+    nameById[t.id] = t.name;
+    logoById[t.id] = teamLogoOf(t);
+  }
 
   const groupMatches = allMatches.filter((m) => m.stage === 'group');
 
@@ -318,10 +331,11 @@ function getTournamentView(id) {
     return {
       label,
       title: multipleGroups ? `Group ${label}` : 'Standings',
-      standings: standingsFor(gTeams, gMatches),
+      standings: standingsFor(gTeams, gMatches).map((r) => ({ ...r, logo: logoById[r.teamId] })),
       matches: gMatches.map((m) => ({
         id: m.id,
         teamA: nameById[m.team_a_id], teamB: nameById[m.team_b_id],
+        logoA: logoById[m.team_a_id], logoB: logoById[m.team_b_id],
         scoreA: m.score_a, scoreB: m.score_b,
         played: m.score_a != null && m.score_b != null,
         ready: true,
@@ -340,6 +354,8 @@ function getTournamentView(id) {
       bracketPos: m.bracket_pos,
       teamA: side(m.team_a_id, m.source_a),
       teamB: side(m.team_b_id, m.source_b),
+      logoA: m.team_a_id != null ? logoById[m.team_a_id] : null, // no logo for "TBD" slots
+      logoB: m.team_b_id != null ? logoById[m.team_b_id] : null,
       scoreA: m.score_a, scoreB: m.score_b,
       ready: m.team_a_id != null && m.team_b_id != null, // both teams known -> playable
       played: m.score_a != null && m.score_b != null,
@@ -386,7 +402,9 @@ function getTournamentView(id) {
     tournament: {
       id: tournament.id, name: tournament.name, sport: tournament.sport,
       date: tournament.date, time: tournament.time, location: tournament.location,
+      locationUrl: tournament.location_url, description: tournament.description,
       format: tournament.format,
+      hasAdminCode: !!tournament.admin_code, // the flag only — never the code itself
     },
     groups,
     knockout: hasKnockout ? { semis, final } : null,
@@ -397,29 +415,113 @@ function getTournamentView(id) {
 }
 
 // =============================================================================
+// ADMIN CODES
+// Every new tournament gets a short creator code. Requests that change RESULTS
+// (goals, scores, regenerating), tournament details, or remove a team must send
+// it in the X-Admin-Code header — the server rejects them otherwise, so hiding
+// buttons in the UI is only cosmetics. Older tournaments (no code) stay open.
+// =============================================================================
+const crypto = require('crypto');
+// No look-alike characters (0/O, 1/I/L), so the code is easy to read out loud.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function newAdminCode() {
+  let code = '';
+  for (let i = 0; i < 6; i++) code += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
+  return code;
+}
+
+// Does this request carry the right code for this tournament?
+// Tournaments created before admin codes existed have none — they stay open.
+function isAdminRequest(tournamentId, req) {
+  const row = db.prepare('SELECT admin_code FROM tournaments WHERE id = ?').get(tournamentId);
+  if (!row) return false;
+  if (!row.admin_code) return true; // legacy tournament: open to everyone
+  const sent = (req.get('X-Admin-Code') || '').trim().toUpperCase();
+  return sent === row.admin_code;
+}
+
+// One shared rejection so every protected route fails the same clear way.
+function rejectNonAdmin(res) {
+  return res.status(403).json({
+    error: "This needs the tournament's admin code — tap Admin on the tournament page to unlock.",
+  });
+}
+
+// =============================================================================
 // API ROUTES
 // =============================================================================
 
-// List all tournaments (for the home page).
+// List all tournaments (for the home page). Explicit columns on purpose:
+// the admin code must never be included in any response after creation.
 app.get('/api/tournaments', (req, res) => {
-  res.json(db.prepare('SELECT * FROM tournaments ORDER BY date ASC').all());
+  res.json(db.prepare(`
+    SELECT id, name, sport, date, time, location, location_url, description, format
+    FROM tournaments ORDER BY date ASC
+  `).all());
 });
 
-// Create a tournament. Body: { name, sport, date, time, location }.
+// Create a tournament.
+// Body: { name, sport, date, time, location, locationUrl, description }.
+// The response includes the freshly generated admin code — the ONLY time it
+// ever leaves the server.
 app.post('/api/tournaments', (req, res) => {
   const name = (req.body.name || '').trim();
   const sport = (req.body.sport || '').trim();
   const date = (req.body.date || '').trim();
   const time = (req.body.time || '').trim();
   const location = (req.body.location || '').trim();
+  const locationUrl = (req.body.locationUrl || '').trim();
+  const description = (req.body.description || '').trim();
 
   if (!name || !sport || !date || !location) {
     return res.status(400).json({ error: 'Please fill in name, sport, date, and location.' });
   }
+  if (locationUrl && !/^https?:\/\//i.test(locationUrl)) {
+    return res.status(400).json({ error: 'The Maps link must be a full link starting with http:// or https://.' });
+  }
+  const adminCode = newAdminCode();
   const info = db
-    .prepare('INSERT INTO tournaments (name, sport, date, time, location) VALUES (?, ?, ?, ?, ?)')
-    .run(name, sport, date, time || null, location);
-  res.status(201).json({ id: info.lastInsertRowid });
+    .prepare(`INSERT INTO tournaments (name, sport, date, time, location, location_url, description, admin_code)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(name, sport, date, time || null, location, locationUrl || null, description || null, adminCode);
+  res.status(201).json({ id: info.lastInsertRowid, adminCode });
+});
+
+// Check a code so the Admin button can unlock (nothing is changed here).
+app.post('/api/tournaments/:id/admin-check', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT admin_code FROM tournaments WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'Tournament not found' });
+  const sent = (req.body.code || '').trim().toUpperCase();
+  if (!row.admin_code || sent === row.admin_code) return res.json({ ok: true });
+  return res.status(403).json({ error: 'That code is not right for this tournament.' });
+});
+
+// Edit tournament details after creation (admin only).
+// Body: { date, time, location, locationUrl, description }.
+app.put('/api/tournaments/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT id FROM tournaments WHERE id = ?').get(id)) {
+    return res.status(404).json({ error: 'Tournament not found' });
+  }
+  if (!isAdminRequest(id, req)) return rejectNonAdmin(res);
+
+  const date = (req.body.date || '').trim();
+  const time = (req.body.time || '').trim();
+  const location = (req.body.location || '').trim();
+  const locationUrl = (req.body.locationUrl || '').trim();
+  const description = (req.body.description || '').trim();
+  if (!date || !location) {
+    return res.status(400).json({ error: 'Please fill in at least the date and location.' });
+  }
+  if (locationUrl && !/^https?:\/\//i.test(locationUrl)) {
+    return res.status(400).json({ error: 'The Maps link must be a full link starting with http:// or https://.' });
+  }
+  db.prepare(`UPDATE tournaments SET date = ?, time = ?, location = ?, location_url = ?, description = ?
+              WHERE id = ?`)
+    .run(date, time || null, location, locationUrl || null, description || null, id);
+  res.json({ ok: true });
 });
 
 // Full details for one tournament (groups, knockout, winner).
@@ -435,10 +537,18 @@ app.get('/api/tournaments/:id/teams', (req, res) => {
   if (!db.prepare('SELECT id FROM tournaments WHERE id = ?').get(id)) {
     return res.status(404).json({ error: 'Tournament not found' });
   }
-  res.json(db.prepare('SELECT id, name FROM teams WHERE tournament_id = ? ORDER BY id').all(id));
+  const teams = db
+    .prepare('SELECT id, name, logo_icon, logo_color, logo_photo FROM teams WHERE tournament_id = ? ORDER BY id')
+    .all(id);
+  res.json(teams.map((t) => ({ id: t.id, name: t.name, logo: teamLogoOf(t) })));
 });
 
-// Add a team to a tournament. Body: { name }.
+// The preset icons a team badge can use (the emoji live in the front-end).
+const TEAM_LOGO_ICONS = ['shield', 'star', 'ball', 'bolt', 'crown', 'fire', 'trophy', 'eagle'];
+
+// Add a team to a tournament.
+// Body: { name, logoIcon, logoColor, logoPhoto } — logo fields optional; either
+// an icon+color badge OR an uploaded photo (photo wins if both are sent).
 app.post('/api/tournaments/:id/teams', (req, res) => {
   const id = Number(req.params.id);
   const name = (req.body.name || '').trim();
@@ -447,7 +557,29 @@ app.post('/api/tournaments/:id/teams', (req, res) => {
   }
   if (!name) return res.status(400).json({ error: 'Please provide a team name.' });
 
-  const info = db.prepare('INSERT INTO teams (name, tournament_id) VALUES (?, ?)').run(name, id);
+  const logoPhoto = req.body.logoPhoto || null;
+  const logoIcon = req.body.logoIcon || null;
+  const logoColor = req.body.logoColor || null;
+  if (logoPhoto) {
+    if (!/^data:image\/(png|jpe?g|webp|gif);base64,/.test(logoPhoto)) {
+      return res.status(400).json({ error: 'Please choose an image file for the logo.' });
+    }
+    if (logoPhoto.length > 1500000) {
+      return res.status(413).json({ error: 'That logo image is too large — try a smaller one.' });
+    }
+  } else {
+    if (logoIcon && !TEAM_LOGO_ICONS.includes(logoIcon)) {
+      return res.status(400).json({ error: 'Unknown logo icon.' });
+    }
+    if (logoColor && !/^#[0-9a-f]{6}$/i.test(logoColor)) {
+      return res.status(400).json({ error: 'The logo color must look like #2563eb.' });
+    }
+  }
+
+  const info = db
+    .prepare(`INSERT INTO teams (name, tournament_id, logo_icon, logo_color, logo_photo)
+              VALUES (?, ?, ?, ?, ?)`)
+    .run(name, id, logoPhoto ? null : logoIcon, logoPhoto ? null : logoColor, logoPhoto);
   res.status(201).json({ id: info.lastInsertRowid, name, tournament_id: id });
 });
 
@@ -457,6 +589,7 @@ app.post('/api/tournaments/:id/generate', (req, res) => {
   if (!db.prepare('SELECT id FROM tournaments WHERE id = ?').get(id)) {
     return res.status(404).json({ error: 'Tournament not found' });
   }
+  if (!isAdminRequest(id, req)) return rejectNonAdmin(res); // regenerating wipes results
   const n = db.prepare('SELECT COUNT(*) AS n FROM teams WHERE tournament_id = ?').get(id).n;
   if (n < 2) return res.status(400).json({ error: 'Add at least 2 teams before generating a schedule.' });
 
@@ -464,11 +597,12 @@ app.post('/api/tournaments/:id/generate', (req, res) => {
   res.json({ ok: true, format });
 });
 
-// Record a match result. Body: { scoreA, scoreB }.
+// Record a match result (admin only — this IS the result). Body: { scoreA, scoreB }.
 app.post('/api/matches/:id/score', (req, res) => {
   const id = Number(req.params.id);
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
   if (!match) return res.status(404).json({ error: 'Match not found' });
+  if (!isAdminRequest(match.tournament_id, req)) return rejectNonAdmin(res);
   if (match.team_a_id == null || match.team_b_id == null) {
     return res.status(400).json({ error: 'This match is still waiting for its teams to be decided.' });
   }
@@ -566,8 +700,8 @@ app.get('/api/matches/:id/detail', (req, res) => {
     return res.status(400).json({ error: 'This match is still waiting for its teams to be decided.' });
   }
 
-  const teamA = db.prepare('SELECT id, name FROM teams WHERE id = ?').get(match.team_a_id);
-  const teamB = db.prepare('SELECT id, name FROM teams WHERE id = ?').get(match.team_b_id);
+  const teamA = db.prepare('SELECT id, name, logo_icon, logo_color, logo_photo FROM teams WHERE id = ?').get(match.team_a_id);
+  const teamB = db.prepare('SELECT id, name, logo_icon, logo_color, logo_photo FROM teams WHERE id = ?').get(match.team_b_id);
   const goals = db.prepare(`
     SELECT g.id, g.player_id AS playerId, g.minute AS minute,
            p.name AS playerName, p.slot AS playerSlot, p.team_id AS teamId
@@ -614,9 +748,12 @@ app.get('/api/matches/:id/detail', (req, res) => {
 
   res.json({
     match: { id: match.id, scoreA: match.score_a, scoreB: match.score_b, photoUrl: match.photo_url },
-    tournament: { id: tournament.id, name: tournament.name, date: tournament.date, time: tournament.time },
-    teamA: { id: teamA.id, name: teamA.name, players: enrich(ensurePlayers(teamA.id)) },
-    teamB: { id: teamB.id, name: teamB.name, players: enrich(ensurePlayers(teamB.id)) },
+    tournament: {
+      id: tournament.id, name: tournament.name, date: tournament.date, time: tournament.time,
+      hasAdminCode: !!tournament.admin_code,
+    },
+    teamA: { id: teamA.id, name: teamA.name, logo: teamLogoOf(teamA), players: enrich(ensurePlayers(teamA.id)) },
+    teamB: { id: teamB.id, name: teamB.name, logo: teamLogoOf(teamB), players: enrich(ensurePlayers(teamB.id)) },
     goals,
     myVote: myVoteRow ? myVoteRow.playerId : null,
   });
@@ -663,6 +800,23 @@ app.put('/api/teams/:id', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Please provide a team name.' });
   db.prepare('UPDATE teams SET name = ? WHERE id = ?').run(name, id);
   res.json({ ok: true, id, name });
+});
+
+// Remove a team (admin only). Its matches go with it (goals on those matches
+// and the team's players cascade away too) — regenerate for a clean schedule.
+app.delete('/api/teams/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const team = db.prepare('SELECT id, tournament_id FROM teams WHERE id = ?').get(id);
+  if (!team) return res.status(404).json({ error: 'Team not found' });
+  if (!isAdminRequest(team.tournament_id, req)) return rejectNonAdmin(res);
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM matches WHERE team_a_id = ? OR team_b_id = ?').run(id, id);
+    db.prepare('DELETE FROM players WHERE team_id = ?').run(id);
+    db.prepare('DELETE FROM teams WHERE id = ?').run(id);
+  })();
+  resolveBracket(team.tournament_id); // knockout slots may need re-deciding
+  res.json({ ok: true });
 });
 
 // Add a substitute to a team's squad (football only). Creates a blank player at
@@ -745,11 +899,12 @@ app.post('/api/matches/:id/ratings', (req, res) => {
   res.json({ ok: true, rating });
 });
 
-// Add a goal for a player. Body: { playerId, minute }.
+// Add a goal for a player (admin only — goals set the score). Body: { playerId, minute }.
 app.post('/api/matches/:id/goals', (req, res) => {
   const id = Number(req.params.id);
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
   if (!match) return res.status(404).json({ error: 'Match not found' });
+  if (!isAdminRequest(match.tournament_id, req)) return rejectNonAdmin(res);
 
   const player = db.prepare('SELECT id, team_id FROM players WHERE id = ?').get(Number(req.body.playerId));
   if (!player) return res.status(400).json({ error: 'Unknown player.' });
@@ -767,12 +922,14 @@ app.post('/api/matches/:id/goals', (req, res) => {
   res.status(201).json({ ok: true, goalId: info.lastInsertRowid });
 });
 
-// Remove a goal.
+// Remove a goal (admin only). The tournament is found through goal -> match,
+// so the check can't be dodged by calling this route directly.
 app.delete('/api/goals/:goalId', (req, res) => {
   const goalId = Number(req.params.goalId);
   const goal = db.prepare('SELECT id, match_id FROM goals WHERE id = ?').get(goalId);
   if (!goal) return res.status(404).json({ error: 'Goal not found' });
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(goal.match_id);
+  if (match && !isAdminRequest(match.tournament_id, req)) return rejectNonAdmin(res);
   db.prepare('DELETE FROM goals WHERE id = ?').run(goalId);
   if (match) recomputeScoreFromGoals(match);
   res.json({ ok: true });

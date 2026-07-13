@@ -22,6 +22,9 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must always win, even over display:flex rules. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   /* Use the device's own clean system font. */
@@ -153,7 +156,8 @@ h3 { font-size: 1.05rem; margin: 18px 0 8px; }
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
 .form-card input,
-.form-card select {
+.form-card select,
+.form-card textarea {
   width: 100%;
   padding: 11px 14px;
   border: 1px solid var(--border);
@@ -162,12 +166,19 @@ h3 { font-size: 1.05rem; margin: 18px 0 8px; }
   background: #fff;
   color: var(--text);
 }
+.form-card textarea {
+  font-family: inherit;   /* textareas default to monospace; match the app font */
+  resize: vertical;
+  line-height: 1.5;
+}
 .form-card input:focus,
-.form-card select:focus {
+.form-card select:focus,
+.form-card textarea:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
 }
+.field-help { font-size: 0.78rem; color: var(--muted); }
 
 /* ---------- Buttons ---------- */
 button {
@@ -185,8 +196,10 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
 .form-message { color: var(--muted); min-height: 1.2em; margin: 10px 0 0; }
 
 /* ---------- Add-team form (add-teams page) ---------- */
-#add-team-form {
+#add-team-form { display: flex; flex-direction: column; gap: 10px; }
+.add-team-row {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;   /* stacks nicely on narrow screens */
 }
@@ -243,6 +256,17 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
 }
 .regenerate-note { color: #b45309; font-size: 0.85rem; margin: 0 0 10px; min-height: 0; }
 .hint-small { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
+
+/* ---------- Location link + description (tournament page) ---------- */
+.location-link { color: var(--primary); text-decoration: none; }
+.location-link:hover { text-decoration: underline; }
+.tournament-desc {
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin: 10px 0 0;
+  max-width: 60ch;
+  white-space: pre-line;   /* keep the line breaks you typed */
+}
 
 /* ---------- Format line + champion banner (tournament page) ---------- */
 .format-line { color: var(--muted); font-size: 0.85rem; margin: 6px 0 0; }
@@ -360,11 +384,18 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
 }
 .reorder-controls button:hover { background: #eef2ff; color: var(--primary); }
 .reorder-hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
-.match-team { font-size: 0.95rem; }
-.match-team.team-a { text-align: right; }
-.match-team.team-b { text-align: left; }
+.match-team {
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.match-team.team-a { justify-content: flex-end; text-align: right; }
+.match-team.team-b { justify-content: flex-start; text-align: left; }
 .match-team.winner { font-weight: 700; }
 .match-team.muted { color: var(--muted); font-style: italic; }
+.mt-name { min-width: 0; }
 .match-mid { display: flex; justify-content: center; }
 .match-score {
   font-weight: 700;
@@ -433,7 +464,7 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
   gap: 14px;
   margin: 10px 0 6px;
 }
-.md-team { font-size: 1.2rem; font-weight: 700; }
+.md-team { font-size: 1.2rem; font-weight: 700; display: inline-flex; align-items: center; gap: 8px; }
 .md-score {
   font-size: 1.3rem;
   font-weight: 700;
@@ -453,7 +484,7 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
   box-shadow: var(--shadow);
   padding: 14px 16px;
 }
-.md-col-title { font-size: 1rem; margin: 0 0 12px; }
+.md-col-title { font-size: 1rem; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
 
 .lineup { display: flex; flex-direction: column; gap: 8px; }
 .player-slot { display: flex; align-items: center; gap: 10px; }
@@ -627,7 +658,7 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
   font-variant-numeric: tabular-nums;
 }
 .goal-name { flex: 1; min-width: 0; font-size: 0.95rem; }
-.goal-team { font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+.goal-team { font-size: 0.78rem; font-weight: 700; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
 
 /* Per-team add-goal controls */
 .goal-adders { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px; }
@@ -742,3 +773,142 @@ button:disabled { background: #c7cbd1; cursor: not-allowed; }
 .vote-btn.voted { background: #16a34a; }
 .vote-btn.voted:hover { background: #15803d; }
 .motm-row.you-voted { border-color: #86efac; }
+
+/* ---------- Team logos ---------- */
+.team-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--muted);
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+  vertical-align: middle;
+}
+.team-logo.logo-xs { width: 18px; height: 18px; font-size: 10px; }
+.team-logo.logo-sm { width: 24px; height: 24px; font-size: 13px; }
+.team-logo.logo-lg { width: 44px; height: 44px; font-size: 22px; }
+.team-cell { display: inline-flex; align-items: center; gap: 7px; }
+
+/* ---------- Logo builder (add-teams page) ---------- */
+#logo-preview { flex: 0 0 auto; display: inline-flex; }
+.logo-builder {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+.logo-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.logo-tab {
+  padding: 6px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #fff;
+  color: var(--muted);
+  border: none;
+  border-radius: 0;
+}
+.logo-tab:hover { background: #eef2ff; color: var(--primary); }
+.logo-tab.active, .logo-tab.active:hover { background: var(--primary); color: #fff; }
+.icon-swatches, .color-swatches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.icon-swatches { margin-bottom: 10px; }
+.icon-swatch {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-swatch:hover { background: #eef2ff; }
+.icon-swatch.selected { border-color: var(--primary); background: #eef2ff; }
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.08);
+}
+.color-swatch:hover { transform: scale(1.1); }
+.color-swatch.selected { outline: 3px solid rgba(37, 99, 235, 0.35); border-color: #fff; }
+#logo-color-custom {
+  width: 36px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+#logo-file { font-size: 0.9rem; }
+
+/* ---------- Admin code panel (shown once after creating a tournament) ---------- */
+.admin-code-panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px 18px;
+  margin-top: 8px;
+  text-align: center;
+}
+.admin-code {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 2.2rem;
+  font-weight: 800;
+  letter-spacing: 0.3em;
+  padding: 10px 18px 10px 26px; /* extra left pad balances the letter-spacing */
+  background: var(--bg);
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  margin: 6px 0 14px;
+}
+.admin-code-warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.92rem;
+  max-width: 46ch;
+  margin: 0 auto 8px;
+}
+.admin-code-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+/* ---------- Admin controls (tournament page header) ---------- */
+.inline-admin { padding: 0 2px; font-size: 0.85rem; }
+.edit-details { margin-top: 14px; text-align: left; }
+.edit-actions { display: flex; align-items: center; gap: 12px; }
+
+/* ---------- Remove team (Manage teams page, admin only) ---------- */
+.team-remove { flex: 0 0 auto; color: var(--muted); padding: 2px 6px; font-size: 0.9rem; }
+.team-remove:hover { color: #b91c1c; text-decoration: none; }

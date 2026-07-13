@@ -34,14 +34,75 @@ function escapeHtml(text) {
   div.textContent = text == null ? '' : text;
   return div.innerHTML;
 }
+// Same, but also safe inside an HTML attribute like href="...".
+function escapeAttr(text) {
+  return escapeHtml(text).replace(/"/g, '&quot;');
+}
 // Read a value from the web address, e.g. ?id=2 -> "2".
 function getQueryParam(name) {
   return new URLSearchParams(window.location.search).get(name);
 }
-// A little line summarising the tournament's date/time/place.
+// A little line summarising the tournament's date/time/place. If a Maps link
+// was saved, only the location NAME shows, as a link opening in a new tab —
+// the raw URL is never displayed.
 function whenWhere(t) {
   const time = t.time ? ' · ' + formatTime(t.time) : '';
-  return `📅 ${formatDate(t.date)}${time} · 📍 ${escapeHtml(t.location)}`;
+  const place = t.locationUrl
+    ? `<a class="location-link" href="${escapeAttr(t.locationUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.location)}</a>`
+    : escapeHtml(t.location);
+  return `📅 ${formatDate(t.date)}${time} · 📍 ${place}`;
+}
+
+// The optional tournament description (line breaks preserved via CSS).
+function descriptionHtml(t) {
+  return t.description ? `<p class="tournament-desc">${escapeHtml(t.description)}</p>` : '';
+}
+
+// =============================================================================
+// ADMIN CODES (per tournament, remembered on this device)
+// The stored code is sent as the X-Admin-Code header; the SERVER decides.
+// Tournaments created before admin codes have none and stay open for everyone.
+// =============================================================================
+function adminCodeFor(tournamentId) {
+  return localStorage.getItem('admin-code-' + tournamentId);
+}
+function setAdminCodeFor(tournamentId, code) {
+  localStorage.setItem('admin-code-' + tournamentId, code.trim().toUpperCase());
+}
+function clearAdminCodeFor(tournamentId) {
+  localStorage.removeItem('admin-code-' + tournamentId);
+}
+// Extra headers for a request that needs admin rights.
+function adminHeaders(tournamentId) {
+  const code = adminCodeFor(tournamentId);
+  return code ? { 'X-Admin-Code': code } : {};
+}
+// Should this device see admin controls for tournament t? (t needs .id and
+// .hasAdminCode). Legacy tournaments without a code are open to everyone.
+function isAdminFor(t) {
+  return !t.hasAdminCode || !!adminCodeFor(t.id);
+}
+
+// =============================================================================
+// TEAM LOGOS — a small circular badge shown next to team names everywhere.
+// A team has either an uploaded photo, or a preset icon on a colored circle,
+// or nothing (then we show the team's first letter on a neutral circle).
+// =============================================================================
+const TEAM_ICONS = {
+  shield: '🛡️', star: '⭐', ball: '⚽', bolt: '⚡',
+  crown: '👑', fire: '🔥', trophy: '🏆', eagle: '🦅',
+};
+
+function teamLogoHtml(logo, name, sizeClass) {
+  const cls = 'team-logo ' + (sizeClass || 'logo-sm');
+  if (logo && logo.photo) {
+    return `<span class="${cls} has-photo" style="background-image:url('${escapeAttr(logo.photo)}')" aria-hidden="true"></span>`;
+  }
+  if (logo && logo.icon && TEAM_ICONS[logo.icon]) {
+    return `<span class="${cls}" style="background:${escapeAttr(logo.color || '#6b7280')}" aria-hidden="true">${TEAM_ICONS[logo.icon]}</span>`;
+  }
+  const letter = Array.from((name || '').trim())[0] || '?';
+  return `<span class="${cls} default" aria-hidden="true">${escapeHtml(letter.toUpperCase())}</span>`;
 }
 
 // =============================================================================
@@ -88,17 +149,127 @@ function loadCreatePage() {
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || 'Could not create the tournament.');
-      // Straight on to adding teams.
-      window.location.href = '/add-teams.html?id=' + body.id;
+      if (body.adminCode) {
+        // This device becomes the admin right away; show the code exactly once.
+        setAdminCodeFor(body.id, body.adminCode);
+        msg.textContent = '';
+        form.hidden = true;
+        form.insertAdjacentHTML('afterend', adminCodePanelHtml(body.id, body.adminCode));
+      } else {
+        window.location.href = '/add-teams.html?id=' + body.id;
+      }
     } catch (err) {
       msg.textContent = err.message;
     }
   });
+
+  // Copy button on the one-time admin-code panel.
+  document.addEventListener('click', async (event) => {
+    if (event.target.id !== 'copy-code') return;
+    const code = document.getElementById('admin-code-text').textContent.trim();
+    try {
+      await navigator.clipboard.writeText(code);
+      event.target.textContent = 'Copied ✓';
+    } catch (_) {
+      event.target.textContent = code; // clipboard blocked — at least show it on the button
+    }
+  });
+}
+
+function adminCodePanelHtml(id, code) {
+  return `
+    <div class="admin-code-panel">
+      <h2>🔑 Your admin code</h2>
+      <div class="admin-code" id="admin-code-text">${escapeHtml(code)}</div>
+      <p class="admin-code-warning"><strong>Save this code</strong> — you'll need it to manage this
+        tournament. Anyone with this code can edit results.</p>
+      <p class="hint-small">This device is already unlocked. The code is not shown again.</p>
+      <div class="admin-code-actions">
+        <button type="button" id="copy-code">Copy code</button>
+        <a class="btn-primary" href="/add-teams.html?id=${id}">Continue to add teams →</a>
+      </div>
+    </div>`;
 }
 
 // =============================================================================
 // ADD-TEAMS PAGE — add teams one at a time, then generate the schedule
 // =============================================================================
+// ---------- Logo builder (add-teams page) ----------
+const PRESET_LOGO_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#ea580c', '#7c3aed', '#0891b2', '#db2777', '#1f2937'];
+const logoBuilder = { mode: 'icon', icon: 'shield', color: '#2563eb', photo: null };
+
+function renderLogoSwatches() {
+  document.getElementById('icon-swatches').innerHTML = Object.keys(TEAM_ICONS).map((key) =>
+    `<button type="button" class="icon-swatch${key === logoBuilder.icon ? ' selected' : ''}" data-icon="${key}" title="${key}" aria-label="${key} icon">${TEAM_ICONS[key]}</button>`
+  ).join('');
+  document.getElementById('color-swatches').innerHTML = PRESET_LOGO_COLORS.map((c) =>
+    `<button type="button" class="color-swatch${c === logoBuilder.color ? ' selected' : ''}" data-color="${c}" style="background:${c}" aria-label="Color ${c}"></button>`
+  ).join('') + `<input type="color" id="logo-color-custom" value="${logoBuilder.color}" title="Custom color" aria-label="Custom color" />`;
+}
+
+// The preview circle always shows exactly what would be saved right now.
+function renderLogoPreview() {
+  const name = document.getElementById('team-name').value;
+  const logo = logoBuilder.mode === 'photo'
+    ? { photo: logoBuilder.photo }
+    : { icon: logoBuilder.icon, color: logoBuilder.color };
+  document.getElementById('logo-preview').innerHTML = teamLogoHtml(logo, name, 'logo-lg');
+}
+
+// Shrink a chosen file into a small square avatar and preview it.
+async function logoBuilderPhoto(file) {
+  try {
+    logoBuilder.photo = await resizeImage(file, 160);
+    renderLogoPreview();
+  } catch (_) { /* not an image — leave the preview as-is */ }
+}
+
+function setLogoMode(mode) {
+  logoBuilder.mode = mode;
+  document.querySelectorAll('.logo-tab').forEach((t) => t.classList.toggle('active', t.dataset.mode === mode));
+  document.getElementById('logo-icon-panel').hidden = mode !== 'icon';
+  document.getElementById('logo-photo-panel').hidden = mode !== 'photo';
+  renderLogoPreview();
+}
+
+// What to send with the new team, based on the current preview.
+function logoBuilderPayload() {
+  if (logoBuilder.mode === 'photo') return logoBuilder.photo ? { logoPhoto: logoBuilder.photo } : {};
+  return { logoIcon: logoBuilder.icon, logoColor: logoBuilder.color };
+}
+
+function initLogoBuilder() {
+  renderLogoSwatches();
+  renderLogoPreview();
+  const builder = document.getElementById('logo-builder');
+  builder.addEventListener('click', (e) => {
+    const tab = e.target.closest('.logo-tab');
+    if (tab) { setLogoMode(tab.dataset.mode); return; }
+    const icon = e.target.closest('.icon-swatch');
+    if (icon) { logoBuilder.icon = icon.dataset.icon; renderLogoSwatches(); renderLogoPreview(); return; }
+    const color = e.target.closest('.color-swatch');
+    if (color) {
+      logoBuilder.color = color.dataset.color;
+      renderLogoSwatches();
+      renderLogoPreview();
+    }
+  });
+  builder.addEventListener('input', (e) => {
+    if (e.target.id === 'logo-color-custom') {
+      logoBuilder.color = e.target.value;
+      document.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
+      renderLogoPreview();
+    }
+  });
+  builder.addEventListener('change', (e) => {
+    if (e.target.id === 'logo-file' && e.target.files && e.target.files[0]) {
+      logoBuilderPhoto(e.target.files[0]);
+    }
+  });
+  // Typing a name updates the fallback-letter preview.
+  document.getElementById('team-name').addEventListener('input', renderLogoPreview);
+}
+
 async function loadAddTeamsPage() {
   const id = getQueryParam('id');
   const headerEl = document.getElementById('at-header');
@@ -107,6 +278,7 @@ async function loadAddTeamsPage() {
   const regenEl = document.getElementById('regenerate-note');
   const btn = document.getElementById('generate-btn');
   let alreadyGenerated = false;
+  let tourAdmin = true; // legacy tournaments (no code) stay open to everyone
 
   // Load the tournament header (and whether a schedule already exists).
   try {
@@ -114,10 +286,12 @@ async function loadAddTeamsPage() {
     const t = view.tournament;
     const s = sportOf(t.sport);
     alreadyGenerated = !!t.format;
+    tourAdmin = isAdminFor(t);
     headerEl.innerHTML = `
       <span class="badge badge-${t.sport}">${s.emoji} ${s.label}</span>
       <h1>${escapeHtml(t.name)}</h1>
-      <p class="card-meta">${whenWhere(t)}</p>`;
+      <p class="card-meta">${whenWhere(t)}</p>
+      ${descriptionHtml(t)}`;
   } catch (err) {
     headerEl.innerHTML = '<p class="empty">Could not load this tournament.</p>';
   }
@@ -137,12 +311,36 @@ async function loadAddTeamsPage() {
 
   async function loadTeams() {
     const teams = await fetch('/api/tournaments/' + id + '/teams').then((r) => r.json());
+    // Removing a team is an admin action (the server enforces it too).
+    const removeBtn = (t) => tourAdmin
+      ? `<button type="button" class="btn-link team-remove" data-team="${t.id}" data-name="${escapeAttr(t.name)}" aria-label="Remove ${escapeAttr(t.name)}" title="Remove team">✕</button>`
+      : '';
     listEl.innerHTML = teams.length
-      ? teams.map((t) => `<li><input class="team-name-input" data-team="${t.id}" value="${escapeHtml(t.name)}" autocomplete="off" aria-label="Team name" /></li>`).join('')
+      ? teams.map((t) => `<li>${teamLogoHtml(t.logo, t.name, 'logo-sm')}<input class="team-name-input" data-team="${t.id}" value="${escapeHtml(t.name)}" autocomplete="off" aria-label="Team name" />${removeBtn(t)}</li>`).join('')
       : '<li class="empty">No teams yet — add your first below.</li>';
     updateHint(teams.length);
   }
   await loadTeams();
+  initLogoBuilder();
+
+  // Remove a team (with a warning — its matches go too).
+  listEl.addEventListener('click', async (e) => {
+    const btnRemove = e.target.closest('.team-remove');
+    if (!btnRemove) return;
+    const name = btnRemove.dataset.name || 'this team';
+    if (!window.confirm(`Remove “${name}”? Its matches are removed too — regenerate the schedule afterwards.`)) return;
+    const res = await fetch('/api/teams/' + btnRemove.dataset.team, {
+      method: 'DELETE',
+      headers: adminHeaders(id),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      if (res.status === 403 && adminCodeFor(id)) clearAdminCodeFor(id); // stale code
+      document.getElementById('form-message').textContent = (body && body.error) || 'Could not remove that team.';
+      return;
+    }
+    await loadTeams();
+  });
 
   // Rename a team when you edit its name and click away or press Enter.
   listEl.addEventListener('focusout', (e) => {
@@ -168,10 +366,15 @@ async function loadAddTeamsPage() {
       const res = await fetch('/api/tournaments/' + id + '/teams', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, ...logoBuilderPayload() }),
       });
       if (!res.ok) throw new Error('failed');
       input.value = '';
+      // The photo belonged to that team; the icon/color stay for the next one.
+      logoBuilder.photo = null;
+      const fileInput = document.getElementById('logo-file');
+      if (fileInput) fileInput.value = '';
+      renderLogoPreview();
       msg.textContent = `Added “${name}”.`;
       await loadTeams();
       input.focus();
@@ -184,8 +387,12 @@ async function loadAddTeamsPage() {
   btn.addEventListener('click', async () => {
     const msg = document.getElementById('form-message');
     try {
-      const res = await fetch('/api/tournaments/' + id + '/generate', { method: 'POST' });
+      const res = await fetch('/api/tournaments/' + id + '/generate', {
+        method: 'POST',
+        headers: adminHeaders(id),
+      });
       const body = await res.json();
+      if (res.status === 403 && adminCodeFor(id)) clearAdminCodeFor(id); // stale code
       if (!res.ok) throw new Error(body.error || 'Could not generate the schedule.');
       window.location.href = '/tournament.html?id=' + id;
     } catch (err) {
@@ -198,6 +405,7 @@ async function loadAddTeamsPage() {
 // TOURNAMENT PAGE — groups, knockout bracket, champion, and score entry
 // =============================================================================
 let tView = null;                     // the most recently loaded tournament data
+let tournamentAdmin = false;          // is this device admin for the shown tournament?
 const editingMatches = new Set();     // ids of matches currently being edited
 
 async function loadTournamentPage() {
@@ -206,6 +414,10 @@ async function loadTournamentPage() {
   const content = document.getElementById('content');
   content.addEventListener('submit', onScoreSubmit);
   content.addEventListener('click', onContentClick);
+  // The header holds the Admin button and the edit-details form.
+  const header = document.getElementById('tournament-header');
+  header.addEventListener('click', onHeaderClick);
+  header.addEventListener('submit', onEditDetailsSubmit);
   // Drag-to-reorder for group fixtures. The handle turns on dragging so the score
   // inputs elsewhere on the card still work normally.
   content.addEventListener('pointerdown', (e) => {
@@ -242,6 +454,19 @@ function renderTournamentPage() {
   const { tournament, groups, knockout, winner, scorers } = tView;
   const s = sportOf(tournament.sport);
   const football = tournament.sport === 'football'; // only football matches are clickable
+  tournamentAdmin = isAdminFor(tournament);
+
+  // Admin controls in the header: unlock/lock (only when the tournament has a
+  // code) and, for admins, the edit-details toggle.
+  let adminBits = '';
+  if (tournament.hasAdminCode) {
+    adminBits = tournamentAdmin
+      ? ` · <button type="button" class="btn-link inline-admin" id="admin-lock" title="Hide admin controls on this device">🔓 Admin · lock</button>`
+      : ` · <button type="button" class="btn-link inline-admin" id="admin-unlock">🔒 Admin</button>`;
+  }
+  const editBits = tournamentAdmin
+    ? ` · <button type="button" class="btn-link inline-admin" id="edit-toggle">✎ Edit details</button>`
+    : '';
 
   // Header
   const formatText = formatDescription(tournament.format);
@@ -249,7 +474,9 @@ function renderTournamentPage() {
     <span class="badge badge-${tournament.sport}">${s.emoji} ${s.label}</span>
     <h1>${escapeHtml(tournament.name)}</h1>
     <p class="card-meta">${whenWhere(tournament)}</p>
-    <p class="format-line">${formatText ? escapeHtml(formatText) + ' · ' : ''}<a href="/add-teams.html?id=${tournament.id}">Manage teams / regenerate</a></p>`;
+    ${descriptionHtml(tournament)}
+    <p class="format-line">${formatText ? escapeHtml(formatText) + ' · ' : ''}<a href="/add-teams.html?id=${tournament.id}">Manage teams / regenerate</a>${editBits}${adminBits}</p>
+    ${tournamentAdmin ? editDetailsFormHtml(tournament) : ''}`;
 
   // Champion banner
   document.getElementById('champion').innerHTML = winner
@@ -296,6 +523,87 @@ function renderTournamentPage() {
   document.getElementById('content').innerHTML = html;
 }
 
+// The admin's edit-details form (hidden until "✎ Edit details" is tapped).
+function editDetailsFormHtml(t) {
+  return `
+    <form id="edit-details-form" class="form-card edit-details" hidden>
+      <div class="field-row">
+        <label class="field"><span class="field-label">Date</span>
+          <input name="date" type="date" value="${escapeAttr(t.date || '')}" required /></label>
+        <label class="field"><span class="field-label">Time <span class="optional">(optional)</span></span>
+          <input name="time" type="time" value="${escapeAttr(t.time || '')}" /></label>
+      </div>
+      <label class="field"><span class="field-label">Location name</span>
+        <input name="location" type="text" value="${escapeAttr(t.location || '')}" required /></label>
+      <label class="field"><span class="field-label">Google Maps link <span class="optional">(optional)</span></span>
+        <input name="locationUrl" type="url" value="${escapeAttr(t.locationUrl || '')}" /></label>
+      <label class="field"><span class="field-label">Description <span class="optional">(optional)</span></span>
+        <textarea name="description" rows="3">${escapeHtml(t.description || '')}</textarea></label>
+      <div class="edit-actions">
+        <button type="submit">Save changes</button>
+        <button type="button" class="btn-link" id="edit-cancel">Cancel</button>
+      </div>
+      <p class="form-message" id="edit-message"></p>
+    </form>`;
+}
+
+// Header clicks: unlock/lock admin mode and open/close the edit form.
+async function onHeaderClick(event) {
+  if (event.target.closest('#admin-unlock')) {
+    const code = window.prompt('Enter the admin code for this tournament:');
+    if (!code) return;
+    const res = await fetch('/api/tournaments/' + tView.tournament.id + '/admin-check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+    });
+    const body = await res.json().catch(() => null);
+    if (res.ok) {
+      setAdminCodeFor(tView.tournament.id, code);
+      renderTournamentPage(); // admin controls appear
+    } else {
+      alert((body && body.error) || 'That code is not right.');
+    }
+    return;
+  }
+  if (event.target.closest('#admin-lock')) {
+    clearAdminCodeFor(tView.tournament.id);
+    renderTournamentPage(); // back to visitor view
+    return;
+  }
+  if (event.target.closest('#edit-toggle')) {
+    const form = document.getElementById('edit-details-form');
+    if (form) form.hidden = !form.hidden;
+    return;
+  }
+  if (event.target.closest('#edit-cancel')) {
+    const form = document.getElementById('edit-details-form');
+    if (form) form.hidden = true;
+  }
+}
+
+// Save the edited tournament details (admin only — the server checks too).
+async function onEditDetailsSubmit(event) {
+  if (event.target.id !== 'edit-details-form') return;
+  event.preventDefault();
+  const tid = tView.tournament.id;
+  const data = Object.fromEntries(new FormData(event.target).entries());
+  const msg = document.getElementById('edit-message');
+  const res = await fetch('/api/tournaments/' + tid, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...adminHeaders(tid) },
+    body: JSON.stringify(data),
+  });
+  const body = await res.json().catch(() => null);
+  if (res.ok) {
+    await reloadTournament(); // re-renders the header with the new details
+  } else if (res.status === 403) {
+    if (adminCodeFor(tid)) clearAdminCodeFor(tid); // the stored code went stale
+    alert((body && body.error) || 'Not allowed.');
+    renderTournamentPage();
+  } else {
+    msg.textContent = (body && body.error) || 'Could not save.';
+  }
+}
+
 function standingsTableHtml(standings) {
   if (!standings.length) return '<p class="empty">No teams yet.</p>';
   // Goal difference, shown with a sign: +3, 0, -2.
@@ -311,7 +619,7 @@ function standingsTableHtml(standings) {
         ${standings.map((r, i) => `
           <tr>
             <td class="rank">${i + 1}</td>
-            <td>${escapeHtml(r.name)}</td>
+            <td><span class="team-cell">${teamLogoHtml(r.logo, r.name, 'logo-xs')}${escapeHtml(r.name)}</span></td>
             <td>${r.played}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>
             <td>${gd(r)}</td><td class="points">${r.points}</td>
           </tr>`).join('')}
@@ -353,11 +661,16 @@ function matchCardHtml(m, isKnockout, reorderable, football) {
   const bWon = m.played && m.scoreB > m.scoreA;
   // Football matches with known teams link to their own detail page.
   const detailLink = football && m.ready;
-  const teamName = (name, side, extra) => {
+  // Each side shows its logo hugging the score (mirrored); TBD slots get none.
+  const teamName = (name, logo, side, extra) => {
     const cls = `match-team ${side}${extra}`;
+    const badge = m.ready ? teamLogoHtml(logo, name, 'logo-xs') : '';
+    const inner = side === 'team-a'
+      ? `<span class="mt-name">${escapeHtml(name)}</span>${badge}`
+      : `${badge}<span class="mt-name">${escapeHtml(name)}</span>`;
     return detailLink
-      ? `<a class="${cls} match-team-link" href="/match.html?id=${m.id}">${escapeHtml(name)}</a>`
-      : `<span class="${cls}">${escapeHtml(name)}</span>`;
+      ? `<a class="${cls} match-team-link" href="/match.html?id=${m.id}">${inner}</a>`
+      : `<span class="${cls}">${inner}</span>`;
   };
 
   let middle, actions;
@@ -365,6 +678,12 @@ function matchCardHtml(m, isKnockout, reorderable, football) {
     // Teams not decided yet.
     middle = `<span class="match-score tbd">vs</span>`;
     actions = `<span class="match-note">Waiting for the previous round</span>`;
+  } else if (!tournamentAdmin) {
+    // Visitors see the result read-only; entering scores is the admin's job.
+    middle = m.played
+      ? `<span class="match-score">${m.scoreA} – ${m.scoreB}</span>`
+      : `<span class="match-score tbd">vs</span>`;
+    actions = '';
   } else if (m.played && !editing) {
     // Show the result with an edit option.
     middle = `<span class="match-score">${m.scoreA} – ${m.scoreB}</span>`;
@@ -388,9 +707,9 @@ function matchCardHtml(m, isKnockout, reorderable, football) {
   const body = `
     <div class="match-body">
       <div class="match-row">
-        ${teamName(m.teamA, 'team-a', `${aWon ? ' winner' : ''}${m.ready ? '' : ' muted'}`)}
+        ${teamName(m.teamA, m.logoA, 'team-a', `${aWon ? ' winner' : ''}${m.ready ? '' : ' muted'}`)}
         <span class="match-mid">${middle}</span>
-        ${teamName(m.teamB, 'team-b', `${bWon ? ' winner' : ''}${m.ready ? '' : ' muted'}`)}
+        ${teamName(m.teamB, m.logoB, 'team-b', `${bWon ? ' winner' : ''}${m.ready ? '' : ' muted'}`)}
       </div>
       <div class="match-actions">${actions}</div>
     </div>`;
@@ -406,8 +725,8 @@ function matchCardHtml(m, isKnockout, reorderable, football) {
 
   const cls = `match${m.ready ? '' : ' tbd'}${reorderable ? ' reorderable' : ''}`;
   const inner = handle + body + controls;
-  // Editable matches are wrapped in a <form> so "Save" submits.
-  const isEntry = m.ready && (!m.played || editing);
+  // Editable matches are wrapped in a <form> so "Save" submits (admins only).
+  const isEntry = tournamentAdmin && m.ready && (!m.played || editing);
   return isEntry
     ? `<form class="${cls}" data-id="${m.id}">${inner}</form>`
     : `<div class="${cls}" data-id="${m.id}">${inner}</div>`;
@@ -430,10 +749,17 @@ async function onScoreSubmit(event) {
   try {
     const res = await fetch('/api/matches/' + id + '/score', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...adminHeaders(tView.tournament.id) },
       body: JSON.stringify({ scoreA: Number(a), scoreB: Number(b) }),
     });
     const body = await res.json();
+    if (res.status === 403) {
+      // The stored code went stale — re-lock this device and show why.
+      if (adminCodeFor(tView.tournament.id)) clearAdminCodeFor(tView.tournament.id);
+      alert(body.error || 'Not allowed.');
+      await reloadTournament();
+      return;
+    }
     if (!res.ok) throw new Error(body.error || 'Could not save.');
     editingMatches.delete(id);
     await reloadTournament();     // re-fetch so standings and the bracket update
@@ -749,9 +1075,9 @@ function renderBody() {
     <div class="match-detail-header">
       <span class="badge badge-football">⚽ Football</span>
       <div class="md-scoreline">
-        <span class="md-team">${escapeHtml(teamA.name)}</span>
+        <span class="md-team">${teamLogoHtml(teamA.logo, teamA.name, 'logo-sm')}${escapeHtml(teamA.name)}</span>
         <span class="md-score" id="md-score">${scoreText(match)}</span>
-        <span class="md-team">${escapeHtml(teamB.name)}</span>
+        <span class="md-team">${escapeHtml(teamB.name)}${teamLogoHtml(teamB.logo, teamB.name, 'logo-sm')}</span>
       </div>
       <p class="card-meta">${escapeHtml(tournament.name)} · 📅 ${formatDate(tournament.date)}${tournament.time ? ' · ' + formatTime(tournament.time) : ''}</p>
     </div>
@@ -859,7 +1185,7 @@ function squadColumnHtml(team) {
   const subs = players.slice(5);
   return `
     <div class="md-col squad-col">
-      <h3 class="md-col-title">${escapeHtml(team.name)}</h3>
+      <h3 class="md-col-title">${teamLogoHtml(team.logo, team.name, 'logo-sm')}${escapeHtml(team.name)}</h3>
       <div class="squad-list" data-team="${team.id}">
         <div class="squad-section">Starting 5</div>
         ${starters.map((p) => squadRowHtml(p, false)).join('')}
@@ -924,24 +1250,44 @@ async function persistSquadOrder(list) {
 }
 
 // ---------- Goals: ordered list + per-team add controls ----------
+// Is this device admin for the match's tournament? (legacy tournaments = yes)
+function matchAdminNow() {
+  return !!matchDetail && isAdminFor(matchDetail.tournament);
+}
+
+// A 403 on a goal action means the stored code went stale — re-lock and explain.
+async function handleStaleAdmin(res) {
+  const body = await res.json().catch(() => null);
+  const tid = matchDetail.tournament.id;
+  if (adminCodeFor(tid)) clearAdminCodeFor(tid);
+  alert((body && body.error) || 'Not allowed.');
+  if (await refetch()) { updateScore(); renderGoalsArea(); }
+}
+
 function renderGoalsArea() {
   const area = document.getElementById('goals-area');
   if (!area) return;
   const { teamA, teamB, goals } = matchDetail;
+  const admin = matchAdminNow();
   const teamName = (id) => (id === teamA.id ? teamA.name : teamB.name);
   const teamSide = (id) => (id === teamA.id ? 'a' : 'b');
+  const teamLogo = (id) => (id === teamA.id ? teamA.logo : teamB.logo);
 
   const list = goals.length
     ? `<ol class="scorer-list">${goals.map((g) => `
          <li>
            <span class="goal-minute-badge">${g.minute == null ? "—" : g.minute + "'"}</span>
            <span class="goal-name">⚽ ${escapeHtml(g.playerName || 'Player')}</span>
-           <span class="goal-team team-${teamSide(g.teamId)}">${escapeHtml(teamName(g.teamId))}</span>
-           <button type="button" class="btn-link remove-goal" data-goal="${g.id}" aria-label="Remove goal" title="Remove goal">✕</button>
+           <span class="goal-team team-${teamSide(g.teamId)}">${teamLogoHtml(teamLogo(g.teamId), teamName(g.teamId), 'logo-xs')}${escapeHtml(teamName(g.teamId))}</span>
+           ${admin ? `<button type="button" class="btn-link remove-goal" data-goal="${g.id}" aria-label="Remove goal" title="Remove goal">✕</button>` : ''}
          </li>`).join('')}</ol>`
     : `<p class="empty">No goals yet.</p>`;
 
-  area.innerHTML = list + `<div class="goal-adders">${goalAdder(teamA)}${goalAdder(teamB)}</div>`;
+  // Goal add/remove is the admin's score control; visitors just see the list.
+  const controls = admin
+    ? `<div class="goal-adders">${goalAdder(teamA)}${goalAdder(teamB)}</div>`
+    : `<p class="hint-small">🔒 Goal editing needs the admin code — unlock it with the Admin button on the tournament page.</p>`;
+  area.innerHTML = list + controls;
 }
 
 function goalAdder(team) {
@@ -1073,7 +1419,7 @@ async function onMatchClick(event) {
   const sqDown = event.target.closest('.sq-down');
   if (sqDown) { const row = sqDown.closest('.squad-row'); const list = row.parentElement; moveSquadRow(row, 1); await persistSquadOrder(list); return; }
 
-  // Add a goal (with the minute from the box next to it).
+  // Add a goal (with the minute from the box next to it). Admin only.
   const add = event.target.closest('.add-goal');
   if (add) {
     const wrap = add.closest('.goal-adder');
@@ -1081,18 +1427,24 @@ async function onMatchClick(event) {
     const minuteInput = wrap.querySelector('.goal-minute');
     if (!select || !select.value) return;
     const minute = minuteInput && minuteInput.value !== '' ? Number(minuteInput.value) : liveMinute();
-    await fetch('/api/matches/' + matchDetail.match.id + '/goals', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const res = await fetch('/api/matches/' + matchDetail.match.id + '/goals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminHeaders(matchDetail.tournament.id) },
       body: JSON.stringify({ playerId: Number(select.value), minute }),
     });
+    if (res.status === 403) return handleStaleAdmin(res);
     if (await refetch()) { updateScore(); renderGoalsArea(); }
     return;
   }
 
-  // Remove a goal.
+  // Remove a goal. Admin only.
   const remove = event.target.closest('.remove-goal');
   if (remove) {
-    await fetch('/api/goals/' + remove.dataset.goal, { method: 'DELETE' });
+    const res = await fetch('/api/goals/' + remove.dataset.goal, {
+      method: 'DELETE',
+      headers: adminHeaders(matchDetail.tournament.id),
+    });
+    if (res.status === 403) return handleStaleAdmin(res);
     if (await refetch()) { updateScore(); renderGoalsArea(); }
     return;
   }

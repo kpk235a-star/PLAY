@@ -32,13 +32,16 @@ db.pragma('foreign_keys = ON');
 // -----------------------------------------------------------------------------
 db.exec(`
   CREATE TABLE IF NOT EXISTS tournaments (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    name     TEXT    NOT NULL,
-    sport    TEXT    NOT NULL,
-    date     TEXT    NOT NULL,
-    time     TEXT,                 -- optional kickoff time, e.g. '18:30'
-    location TEXT    NOT NULL,
-    format   TEXT                  -- 'round-robin' | 'one-group' | 'two-groups' (set when generated)
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL,
+    sport        TEXT    NOT NULL,
+    date         TEXT    NOT NULL,
+    time         TEXT,             -- optional kickoff time, e.g. '18:30'
+    location     TEXT    NOT NULL, -- short location name, e.g. 'Riverside Park'
+    location_url TEXT,             -- optional Google Maps link behind the name
+    description  TEXT,             -- optional multi-line notes (rules, what to bring...)
+    format       TEXT,             -- 'round-robin' | 'one-group' | 'two-groups' (set when generated)
+    admin_code   TEXT              -- 6-char creator code guarding results; NULL = open (older tournaments)
   );
 
   CREATE TABLE IF NOT EXISTS teams (
@@ -46,6 +49,9 @@ db.exec(`
     name          TEXT    NOT NULL,
     tournament_id INTEGER NOT NULL,
     group_label   TEXT,             -- 'A' or 'B', assigned when the schedule is generated
+    logo_icon     TEXT,             -- preset icon key ('shield', 'star', ...) for an icon badge
+    logo_color    TEXT,             -- badge background color, e.g. '#2563eb'
+    logo_photo    TEXT,             -- OR an uploaded logo, stored as a small base64 data URL
     FOREIGN KEY (tournament_id) REFERENCES tournaments(id)
   );
 
@@ -132,7 +138,14 @@ function addColumnIfMissing(table, column, definition) {
 // Adding new, always-optional columns is simple and safe.
 addColumnIfMissing('tournaments', 'time', 'TEXT');
 addColumnIfMissing('tournaments', 'format', 'TEXT');
+addColumnIfMissing('tournaments', 'location_url', 'TEXT');
+addColumnIfMissing('tournaments', 'description', 'TEXT');
 addColumnIfMissing('teams', 'group_label', 'TEXT');
+addColumnIfMissing('teams', 'logo_icon', 'TEXT');
+addColumnIfMissing('teams', 'logo_color', 'TEXT');
+addColumnIfMissing('teams', 'logo_photo', 'TEXT');
+// Admin codes (added later): older tournaments keep NULL and stay fully open.
+addColumnIfMissing('tournaments', 'admin_code', 'TEXT');
 
 // The "matches" table is trickier: older versions marked team/score columns as
 // REQUIRED, but we now need them blank for placeholders. SQLite can't relax that
